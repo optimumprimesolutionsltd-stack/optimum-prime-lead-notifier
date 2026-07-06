@@ -74,11 +74,10 @@ def reply_to_lead(lead: dict) -> dict:
             f"Hello {name}! 👋\n\n"
             f"Thank you for reaching out to *Optimum Prime Solutions* — "
             f"Kenya's Certified TallyPrime Partner.\n\n"
-            f"We've received your enquiry about *{interest}* and one of our "
-            f"consultants will be in touch with you within *1 hour* during business hours "
-            f"(Mon–Fri, 8am–6pm).\n\n"
-            f"In the meantime, feel free to explore our website or call us directly:\n"
-            f"📞 *+254 116 246 074*\n\n"
+            f"We've received your enquiry about *{interest}* and will get back to you shortly.\n\n"
+            f"Feel free to explore our website or reach us directly:\n"
+            f"📞 *+254 116 246 074*\n"
+            f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
         )
 
