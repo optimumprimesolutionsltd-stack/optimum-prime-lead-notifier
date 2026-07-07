@@ -84,6 +84,36 @@ def notify_team(lead: dict) -> list:
             results.append({"to": to, "error": str(e), "success": False})
     return results
 
+def build_google_calendar_link(name: str, company: str, date_str: str, time_slot: str) -> str:
+    """Build a Google Calendar link for a 1-hour demo slot."""
+    if not date_str or not time_slot:
+        return ""
+    try:
+        from datetime import datetime, timedelta, timezone
+        import urllib.parse
+
+        start_str = time_slot.split('–')[0].strip()  # e.g. "10:00 AM"
+        dt = datetime.strptime(f"{date_str} {start_str}", "%Y-%m-%d %I:%M %p")
+        # Convert EAT (UTC+3) to UTC
+        eat = timezone(timedelta(hours=3))
+        dt_eat = dt.replace(tzinfo=eat)
+        dt_utc = dt_eat.astimezone(timezone.utc)
+        dt_end = dt_utc + timedelta(hours=1)
+
+        fmt = lambda d: d.strftime("%Y%m%dT%H%M%SZ")
+        title = urllib.parse.quote(f"TallyPrime Demo — {company or name}")
+        details = urllib.parse.quote(
+            f"Free 1-hour TallyPrime demo with Optimum Prime Solutions.\nClient: {name}{' | ' + company if company else ''}"
+        )
+        location = urllib.parse.quote("Google Meet — link to be shared by Optimum Prime Solutions")
+        return (
+            f"https://calendar.google.com/calendar/render?action=TEMPLATE"
+            f"&text={title}&dates={fmt(dt_utc)}/{fmt(dt_end)}&details={details}&location={location}"
+        )
+    except Exception:
+        return ""
+
+
 def reply_to_lead(lead: dict) -> dict:
     phone = lead.get("phone", "")
     if not phone:
@@ -91,7 +121,10 @@ def reply_to_lead(lead: dict) -> dict:
     if not phone.startswith("+"):
         phone = "+" + phone.lstrip("0")
 
-    name = lead.get("name", "there")
+    name     = lead.get("name", "there")
+    company  = lead.get("company", "")
+    demo_date = lead.get("demoDate", "")
+    demo_time = lead.get("demoTime", "")
 
     # If a custom confirmation message is provided (e.g. webinar registration), use it
     custom_msg = lead.get("confirmation_message", "")
@@ -99,12 +132,22 @@ def reply_to_lead(lead: dict) -> dict:
         body = custom_msg
     else:
         interest = lead.get("interest", "our services")
+        cal_link = build_google_calendar_link(name, company, demo_date, demo_time)
+
         body = (
             f"Hello {name}! 👋\n\n"
             f"Thank you for reaching out to *Optimum Prime Solutions* — "
             f"Kenya's Certified TallyPrime Partner.\n\n"
-            f"We've received your enquiry about *{interest}* and will get back to you shortly.\n\n"
-            f"Feel free to explore our website or reach us directly:\n"
+            f"We've received your demo request and will confirm your appointment shortly.\n\n"
+        )
+        if demo_date and demo_time:
+            body += (
+                f"📅 *Preferred slot:* {demo_date} | {demo_time} (EAT)\n\n"
+            )
+            if cal_link:
+                body += f"🗓️ *Save the date:*\n{cal_link}\n\n"
+        body += (
+            f"Feel free to reach us directly in the meantime:\n"
             f"📞 *+254 116 246 074*\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
