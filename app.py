@@ -4,6 +4,7 @@ Optimum Prime Solutions — Lead Auto-Reply & Webinar Notification System
 """
 
 import os
+import requests
 from twilio.rest import Client
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,6 +12,9 @@ from flask_cors import CORS
 ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN")
 FROM_WA     = "whatsapp:+14155238886"
+
+# Firebase Realtime Database — webinar registrations node
+FIREBASE_URL = "https://optimum-website-1a60b-default-rtdb.europe-west1.firebasedatabase.app/webinar_registrants.json"
 
 TEAM_NUMBERS = [
     "whatsapp:+254758449475",
@@ -23,6 +27,17 @@ CORS(app)
 def _client():
     return Client(ACCOUNT_SID, AUTH_TOKEN)
 
+def get_registration_count() -> int:
+    """Fetch the current total number of webinar registrants from Firebase."""
+    try:
+        resp = requests.get(FIREBASE_URL, timeout=5)
+        data = resp.json()
+        if data and isinstance(data, dict):
+            return len(data)
+        return 0
+    except Exception:
+        return -1  # -1 signals a fetch error
+
 def notify_team(lead: dict) -> list:
     name     = lead.get("name", "Unknown")
     phone    = lead.get("phone", "Not provided")
@@ -32,8 +47,14 @@ def notify_team(lead: dict) -> list:
     source   = lead.get("source", "Website")
     message  = lead.get("message", "")
 
+    count = get_registration_count()
+    if count == -1:
+        count_line = "📊 *Total registrations:* (unavailable)\n"
+    else:
+        count_line = f"📊 *Total registrations so far:* {count}\n"
+
     body = (
-        f"🔔 *New Lead — Optimum Prime Solutions*\n\n"
+        f"🔔 *New Webinar Registration — Optimum Prime Solutions*\n\n"
         f"👤 *Name:* {name}\n"
         f"🏢 *Company:* {company}\n"
         f"📞 *Phone:* {phone}\n"
@@ -43,6 +64,7 @@ def notify_team(lead: dict) -> list:
     )
     if message:
         body += f"💬 *Message:* {message}\n"
+    body += f"\n{count_line}"
     body += "\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
 
     client = _client()
