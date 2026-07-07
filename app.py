@@ -588,6 +588,45 @@ def new_lead():
         "details": {"team": team_results, "lead": lead_result}
     })
 
+@app.route("/new-review", methods=["POST"])
+def new_review():
+    """Notify team on WhatsApp when a new website review is submitted."""
+    data = request.get_json(force=True, silent=True) or {}
+    name    = data.get("name", "Anonymous")
+    company = data.get("company", "")
+    role    = data.get("role", "")
+    rating  = data.get("rating", 5)
+    text    = data.get("text", "")
+
+    stars = "⭐" * int(rating)
+    company_line = f"\n🏢 *Company:* {company}" if company else ""
+    role_line    = f"\n💼 *Role:* {role}" if role else ""
+
+    body = (
+        f"⭐ *New Website Review — Optimum Prime Solutions*\n\n"
+        f"👤 *Name:* {name}"
+        f"{company_line}"
+        f"{role_line}\n"
+        f"🌟 *Rating:* {stars} ({rating}/5)\n\n"
+        f"💬 *Review:*\n{text}\n\n"
+        f"👉 Approve or reject at: https://www.optimumprimesolutions.co.ke/admin"
+    )
+
+    client = _client()
+    results = []
+    for to in TEAM_NUMBERS:
+        try:
+            msg = client.messages.create(from_=FROM_WA, to=to, body=body)
+            results.append({"to": to, "sid": msg.sid, "success": True})
+        except Exception as e:
+            results.append({"to": to, "error": str(e), "success": False})
+
+    return jsonify({
+        "notified": sum(1 for r in results if r.get("success")),
+        "details": results
+    })
+
+
 @app.route("/export-leads", methods=["GET"])
 def export_leads():
     """Download all demo requests as a CSV file."""
