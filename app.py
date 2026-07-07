@@ -210,7 +210,7 @@ def reply_to_lead(lead: dict) -> dict:
             f"In the meantime, feel free to reach us:\n"
             f"📞 *+254 116 246 074*\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
+            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
         )
 
     client = _client()
