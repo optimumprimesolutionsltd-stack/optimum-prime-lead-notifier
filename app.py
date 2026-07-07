@@ -448,7 +448,7 @@ def get_zawadi_reply(messages: list) -> str:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=contents,
-            config={"max_output_tokens": 500, "temperature": 0.7}
+            config={"max_output_tokens": 1500, "temperature": 0.7}
         )
         return response.text.strip()
     except Exception as e:
