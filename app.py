@@ -234,9 +234,22 @@ def reply_to_lead(lead: dict) -> dict:
                     f"🗓️ *Add to Google Calendar:*\n"
                     f"{cal_link}\n\n"
                 )
-            body += (
-                f"⏰ *We'll send you a reminder* the day before and 30 minutes before your demo.\n\n"
-            )
+            # Check if demo is today (EAT timezone)
+            try:
+                eat = timezone(timedelta(hours=3))
+                today_eat = datetime.now(eat).strftime("%Y-%m-%d")
+                is_today = (demo_date == today_eat)
+            except Exception:
+                is_today = False
+
+            if is_today:
+                body += (
+                    f"⏰ *Your demo is today!* We'll send you a reminder 30 minutes before your session.\n\n"
+                )
+            else:
+                body += (
+                    f"⏰ *We'll send you a reminder* the day before and 30 minutes before your demo.\n\n"
+                )
         else:
             body += "Our team will reach out shortly to confirm your demo slot.\n\n"
 
