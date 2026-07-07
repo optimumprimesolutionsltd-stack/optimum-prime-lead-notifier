@@ -28,6 +28,13 @@ TEAM_NUMBERS = [
     "whatsapp:+254116246074",
 ]
 
+# Public URL of this Render service (used as Twilio status callback)
+SERVICE_URL = os.environ.get("SERVICE_URL", "https://optimum-prime-lead-notifier.onrender.com")
+STATUS_CALLBACK_URL = f"{SERVICE_URL}/webhook/twilio-status"
+
+# In-memory store: SID -> recipient info (for failure alerts)
+_pending_messages: dict = {}
+
 app = Flask(__name__)
 CORS(app)
 
@@ -263,7 +270,18 @@ def reply_to_lead(lead: dict) -> dict:
 
     client = _client()
     try:
-        msg = client.messages.create(from_=FROM_WA, to=f"whatsapp:{phone}", body=body)
+        msg = client.messages.create(
+            from_=FROM_WA,
+            to=f"whatsapp:{phone}",
+            body=body,
+            status_callback=STATUS_CALLBACK_URL,
+        )
+        # Track pending message for failure alerting
+        _pending_messages[msg.sid] = {
+            "to": phone,
+            "name": name,
+            "type": "client_confirmation",
+        }
         return {"success": True, "sid": msg.sid, "to": phone}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -327,6 +345,51 @@ def build_webinar_csv():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
+
+
+@app.route("/webhook/twilio-status", methods=["POST"])
+def twilio_status_webhook():
+    """
+    Receives Twilio delivery status callbacks.
+    Sends a WhatsApp alert to the team if a client message fails to deliver.
+    """
+    sid        = request.form.get("MessageSid", "")
+    status     = request.form.get("MessageStatus", "")
+    to_number  = request.form.get("To", "").replace("whatsapp:", "")
+
+    # Only alert on terminal failure statuses
+    FAILED_STATUSES = {"failed", "undelivered"}
+    if status in FAILED_STATUSES:
+        info = _pending_messages.get(sid, {})
+        name = info.get("name", "Unknown")
+        msg_type = info.get("type", "message")
+
+        alert_body = (
+            f"⚠️ *WhatsApp Delivery Failed*\n\n"
+            f"📵 *Status:* {status.upper()}\n"
+            f"📞 *To:* {to_number}\n"
+            f"👤 *Name:* {name}\n"
+            f"📦 *Message type:* {msg_type}\n"
+            f"🔑 *SID:* {sid}\n\n"
+            f"The recipient may not be opted in to the WhatsApp sandbox.\n"
+            f"Ask them to send `join <keyword>` to +1 415 523 8886 on WhatsApp, then resend."
+        )
+
+        client = _client()
+        for team_num in TEAM_NUMBERS:
+            try:
+                client.messages.create(from_=FROM_WA, to=team_num, body=alert_body)
+            except Exception:
+                pass
+
+        # Clean up tracking
+        _pending_messages.pop(sid, None)
+
+    elif status in {"delivered", "read"}:
+        # Clean up on success
+        _pending_messages.pop(sid, None)
+
+    return "", 204
 
 @app.route("/new-lead", methods=["POST"])
 def new_lead():
