@@ -397,11 +397,24 @@ COMMON CUSTOMER PROFILES:
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
 - Businesses with 1–200+ employees.
 
-HANDOFF TO HUMAN:
-- If the user wants to speak to a person, book a demo, get a quote, or asks something you cannot answer confidently, encourage them to:
-  1. Book a free demo at: www.optimumprimesolutions.co.ke/contact#demo-form
-  2. Or chat directly on WhatsApp: +254 116 246 074
-  3. Or register for the free webinar: www.optimumprimesolutions.co.ke/webinar
+HANDOFF TO HUMAN — SMART HANDOFF PROTOCOL:
+When the user expresses any of the following intents, trigger the smart handoff:
+- Wants to speak to a person / consultant / expert
+- Wants a quote or pricing
+- Wants to book a demo or consultation
+- Asks to be called back
+- Says "call me", "contact me", "reach me", "I'm interested", "let's proceed"
+
+SMART HANDOFF STEPS:
+1. First, warmly acknowledge their interest.
+2. Ask for their name (if you don't already know it) and their WhatsApp number.
+3. Once you have BOTH name and phone number, respond with ONLY this exact JSON format (no other text):
+   {"handoff": true, "name": "<their name>", "phone": "<their phone>", "interest": "<brief summary of what they want>"}
+4. Do NOT include any other text before or after the JSON when triggering a handoff.
+5. If you already know their name from earlier in the conversation, only ask for their phone number.
+
+If the user declines to provide their number, respond:
+"No problem! You can reach us anytime on WhatsApp at +254 116 246 074 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
 
 CONVERSATION STYLE:
 - Warm, professional, and concise. Use simple English suitable for Kenyan business owners.
@@ -442,14 +455,71 @@ def chat():
     """
     Zawadi AI chat endpoint.
     Expects: { "messages": [{"role": "user"|"assistant", "content": "..."}] }
-    Returns: { "reply": "..." }
+    Returns: { "reply": "...", "handoff": false } or { "handoff": true, "name": "...", "phone": "...", "interest": "..." }
     """
+    import json as _json
     data = request.get_json(force=True, silent=True) or {}
     messages = data.get("messages", [])
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
+
     reply = get_zawadi_reply(messages)
-    return jsonify({"reply": reply})
+
+    # Detect if Zawadi returned a handoff JSON
+    try:
+        # Strip markdown code fences if present
+        clean = reply.strip().lstrip('`').rstrip('`')
+        if clean.startswith('{') and '"handoff"' in clean:
+            handoff_data = _json.loads(clean)
+            if handoff_data.get('handoff'):
+                name     = handoff_data.get('name', 'Unknown')
+                phone    = handoff_data.get('phone', '')
+                interest = handoff_data.get('interest', 'General enquiry via Zawadi chatbot')
+
+                # Fire team alert via WhatsApp
+                try:
+                    client = _client()
+                    alert = (
+                        f"\U0001f916 *Zawadi Handoff — New Lead*\n\n"
+                        f"\U0001f464 *Name:* {name}\n"
+                        f"\U0001f4de *Phone:* {phone}\n"
+                        f"\U0001f4bc *Interest:* {interest}\n\n"
+                        f"Reply quickly — leads convert best within 5 minutes! \u26a1"
+                    )
+                    for team_num in TEAM_NUMBERS:
+                        client.messages.create(
+                            from_=FROM_WA,
+                            to=team_num,
+                            body=alert,
+                            status_callback=STATUS_CALLBACK_URL
+                        )
+                except Exception:
+                    pass
+
+                # Also save to Firebase as a lead
+                try:
+                    lead_record = {
+                        "name": name,
+                        "phone": phone,
+                        "message": interest,
+                        "source": "Zawadi Chatbot Handoff",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
+                except Exception:
+                    pass
+
+                return jsonify({
+                    "handoff": True,
+                    "name": name,
+                    "phone": phone,
+                    "interest": interest,
+                    "whatsapp_url": f"https://wa.me/254116246074?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}"
+                })
+    except Exception:
+        pass
+
+    return jsonify({"reply": reply, "handoff": False})
 
 
 @app.route("/webhook/twilio-status", methods=["POST"])
