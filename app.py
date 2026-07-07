@@ -152,19 +152,16 @@ def notify_team(lead: dict) -> list:
     if message:
         body += f"💬 *Message:* {message}\n"
 
-    # Add preferred demo slot + calendar link to team alert
+    # Add preferred demo slot + meet link to team alert (no calendar URL — keeps message short)
     if not is_webinar and demo_date and demo_time:
         display_date = format_date_display(demo_date)
-        cal_link = build_google_calendar_link(name, company if company != "Not provided" else "", demo_date, demo_time)
+        meet_link = generate_meet_link(name, company if company != "Not provided" else "", demo_date, demo_time)
         body += (
             f"\n📅 *Preferred slot:* {display_date}\n"
             f"🕐 *Time:* {demo_time} (EAT)\n"
         )
-        if cal_link:
-            body += f"\n🗓️ *Add to your calendar:*\n{cal_link}\n"
-        meet_link = generate_meet_link(name, company if company != "Not provided" else "", demo_date, demo_time)
         if meet_link:
-            body += f"\n📹 *Google Meet link:*\n{meet_link}\n"
+            body += f"\n📹 *Meet link:* {meet_link}\n"
 
     if count_line:
         body += f"\n{count_line}"
