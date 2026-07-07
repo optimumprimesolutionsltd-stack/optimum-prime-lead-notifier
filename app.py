@@ -188,11 +188,16 @@ def notify_team(lead: dict) -> list:
 
 
 def reply_to_lead(lead: dict) -> dict:
-    phone = lead.get("phone", "")
+    phone = lead.get("phone", "").strip().replace(" ", "")
     if not phone:
         return {"success": False, "reason": "No phone number provided"}
-    if not phone.startswith("+"):
-        phone = "+" + phone.lstrip("0")
+    # Normalise Kenyan phone numbers to E.164 format
+    if phone.startswith("0") and len(phone) == 10:
+        phone = "+254" + phone[1:]          # 0712345678 → +254712345678
+    elif phone.startswith("254") and not phone.startswith("+"):
+        phone = "+" + phone                 # 254712345678 → +254712345678
+    elif not phone.startswith("+"):
+        phone = "+254" + phone              # 712345678 → +254712345678
 
     name      = lead.get("name", "there")
     company   = lead.get("company", "")
