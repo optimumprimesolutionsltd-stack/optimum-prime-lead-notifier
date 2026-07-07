@@ -428,21 +428,32 @@ CONVERSATION STYLE:
 """
 
 def get_zawadi_reply(messages: list) -> str:
-    """Call the OpenAI-compatible LLM with the Zawadi system prompt."""
+    """Call Google Gemini 2.5 Flash with the Zawadi system prompt."""
     try:
-        openai_api_key  = os.environ.get("OPENAI_API_KEY", "")
-        openai_api_base = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
-        client = OpenAI(api_key=openai_api_key, base_url=openai_api_base)
-        full_messages = [{"role": "system", "content": ZAWADI_SYSTEM_PROMPT}] + messages
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=full_messages,
-            max_tokens=400,
-            temperature=0.7,
+        from google import genai
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        client = genai.Client(api_key=gemini_key)
+        # Build full message list with system prompt prepended as first user/model exchange
+        contents = [{"role": "user", "parts": [{"text": "System: " + ZAWADI_SYSTEM_PROMPT + "\n\nUser: " + (messages[0]["content"] if messages else "Hello")}]}
+                    ] if messages else []
+        # If more than one message, build proper history
+        if len(messages) > 1:
+            contents = []
+            for i, msg in enumerate(messages):
+                role = "user" if msg["role"] == "user" else "model"
+                text = msg["content"]
+                if i == 0 and role == "user":
+                    text = "System: " + ZAWADI_SYSTEM_PROMPT + "\n\nUser: " + text
+                contents.append({"role": role, "parts": [{"text": text}]})
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={"max_output_tokens": 500, "temperature": 0.7}
         )
-        return response.choices[0].message.content.strip()
+        return response.text.strip()
     except Exception as e:
-        return f"I'm having a little trouble connecting right now. Please reach us directly on WhatsApp at +254 116 246 074 or visit www.optimumprimesolutions.co.ke"
+        print(f"Gemini error: {e}")
+        return "I'm having a little trouble connecting right now. Please reach us directly on WhatsApp at +254 116 246 074 or visit www.optimumprimesolutions.co.ke"
 
 
 @app.route("/health", methods=["GET"])
