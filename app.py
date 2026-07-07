@@ -14,7 +14,7 @@ AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN")
 FROM_WA     = "whatsapp:+14155238886"
 
 # Firebase Realtime Database — webinar registrations node
-FIREBASE_URL = "https://optimum-website-1a60b-default-rtdb.europe-west1.firebasedatabase.app/webinar_registrants.json"
+FIREBASE_URL = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app/webinar_registrants.json"
 
 TEAM_NUMBERS = [
     "whatsapp:+254758449475",
