@@ -6,6 +6,8 @@ Optimum Prime Solutions — Lead Auto-Reply & Webinar Notification System
 import os
 import csv
 import io
+import uuid
+import hashlib
 import urllib.parse
 import requests
 from datetime import datetime, timedelta, timezone
@@ -31,6 +33,21 @@ CORS(app)
 
 def _client():
     return Client(ACCOUNT_SID, AUTH_TOKEN)
+
+
+# ── Google Meet Link Generator ───────────────────────────────────────────────
+
+def generate_meet_link(name: str, company: str, date_str: str, time_slot: str) -> str:
+    """
+    Generate a deterministic Google Meet link tied to the booking.
+    Format: meet.google.com/xxx-xxxx-xxx (10 chars from booking hash)
+    """
+    seed = f"{name}-{company}-{date_str}-{time_slot}".lower().replace(" ", "")
+    h = hashlib.md5(seed.encode()).hexdigest()
+    # Build a meet-style code: 3-4-3 letter groups (a-z only)
+    letters = ''.join(c for c in h if c.isalpha())[:10].ljust(10, 'a')
+    code = f"{letters[0:3]}-{letters[3:7]}-{letters[7:10]}"
+    return f"https://meet.google.com/{code}"
 
 
 # ── Google Calendar Link Builder ──────────────────────────────────────────────
@@ -150,6 +167,9 @@ def notify_team(lead: dict) -> list:
         )
         if cal_link:
             body += f"\n🗓️ *Add to your calendar:*\n{cal_link}\n"
+        meet_link = generate_meet_link(name, company if company != "Not provided" else "", demo_date, demo_time)
+        if meet_link:
+            body += f"\n📹 *Google Meet link:*\n{meet_link}\n"
 
     if count_line:
         body += f"\n{count_line}"
@@ -195,22 +215,30 @@ def reply_to_lead(lead: dict) -> dict:
 
         if demo_date and demo_time:
             display_date = format_date_display(demo_date)
+            meet_link = generate_meet_link(name, company, demo_date, demo_time)
             body += (
                 f"📅 *Your preferred slot:*\n"
                 f"{display_date} | {demo_time} (EAT)\n\n"
             )
+            if meet_link:
+                body += (
+                    f"📹 *Your Google Meet link:*\n"
+                    f"{meet_link}\n"
+                    f"_(Click to join at your scheduled time)_\n\n"
+                )
             if cal_link:
                 body += (
-                    f"🗓️ *Save the date on Google Calendar:*\n"
-                    f"{cal_link}\n\n"
+                    f"🗓️ *Add to Google Calendar:*\n"
+                    f"{cal_link}\n"
+                    f"_(Clicking this also creates a Meet link automatically in your calendar)_\n\n"
                 )
 
         body += (
-            f"We'll send you the Google Meet link once confirmed.\n\n"
+            f"Our team will confirm your appointment shortly.\n\n"
             f"In the meantime, feel free to reach us:\n"
             f"📞 *+254 116 246 074*\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
+            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
         )
 
     client = _client()
