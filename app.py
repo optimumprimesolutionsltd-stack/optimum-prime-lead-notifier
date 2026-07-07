@@ -4,17 +4,20 @@ Optimum Prime Solutions — Lead Auto-Reply & Webinar Notification System
 """
 
 import os
+import csv
+import io
 import requests
 from twilio.rest import Client
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN")
 FROM_WA     = "whatsapp:+14155238886"
 
-# Firebase Realtime Database — webinar registrations node
-FIREBASE_URL = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app/webinar_registrants.json"
+FIREBASE_BASE = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
+FIREBASE_WEBINAR_URL = f"{FIREBASE_BASE}/webinar_registrants.json"
+FIREBASE_LEADS_URL   = f"{FIREBASE_BASE}/leads.json"
 
 TEAM_NUMBERS = [
     "whatsapp:+254758449475",
@@ -30,7 +33,7 @@ def _client():
 def get_registration_count() -> int:
     """Fetch the current total number of webinar registrants from Firebase."""
     try:
-        resp = requests.get(FIREBASE_URL, timeout=5)
+        resp = requests.get(FIREBASE_WEBINAR_URL, timeout=5)
         data = resp.json()
         if data and isinstance(data, dict):
             return len(data)
@@ -47,14 +50,17 @@ def notify_team(lead: dict) -> list:
     source   = lead.get("source", "Website")
     message  = lead.get("message", "")
 
-    count = get_registration_count()
-    if count == -1:
-        count_line = "📊 *Total registrations:* (unavailable)\n"
+    # Use appropriate header based on interest type
+    if "Webinar" in interest:
+        count = get_registration_count()
+        count_line = f"📊 *Total registrations so far:* {count}\n" if count != -1 else "📊 *Total registrations:* (unavailable)\n"
+        header = "🔔 *New Webinar Registration — Optimum Prime Solutions*"
     else:
-        count_line = f"📊 *Total registrations so far:* {count}\n"
+        count_line = ""
+        header = "🔔 *New Demo Request — Optimum Prime Solutions*"
 
     body = (
-        f"🔔 *New Webinar Registration — Optimum Prime Solutions*\n\n"
+        f"{header}\n\n"
         f"👤 *Name:* {name}\n"
         f"🏢 *Company:* {company}\n"
         f"📞 *Phone:* {phone}\n"
@@ -64,7 +70,8 @@ def notify_team(lead: dict) -> list:
     )
     if message:
         body += f"💬 *Message:* {message}\n"
-    body += f"\n{count_line}"
+    if count_line:
+        body += f"\n{count_line}"
     body += "\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
 
     client = _client()
@@ -111,6 +118,68 @@ def reply_to_lead(lead: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
+# ── CSV Export Helpers ────────────────────────────────────────────────────────
+
+def fetch_firebase(url: str) -> dict:
+    try:
+        resp = requests.get(url, timeout=8)
+        data = resp.json()
+        return data if isinstance(data, dict) and "error" not in data else {}
+    except Exception:
+        return {}
+
+def build_leads_csv() -> str:
+    data = fetch_firebase(FIREBASE_LEADS_URL)
+    output = io.StringIO()
+    fields = ["Name", "Company", "Phone", "Email", "Business Type",
+              "Current Software", "Preferred Demo Date", "Message", "Status", "Submitted At"]
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    rows = []
+    for key, r in data.items():
+        if not isinstance(r, dict):
+            continue
+        rows.append({
+            "Name":                r.get("name", ""),
+            "Company":             r.get("company", ""),
+            "Phone":               r.get("phone", ""),
+            "Email":               r.get("email", ""),
+            "Business Type":       r.get("businessType", ""),
+            "Current Software":    r.get("currentSoftware", ""),
+            "Preferred Demo Date": r.get("demoDate", ""),
+            "Message":             r.get("message", ""),
+            "Status":              r.get("status", "New"),
+            "Submitted At":        r.get("createdAt", ""),
+        })
+    rows.sort(key=lambda x: x["Submitted At"])
+    writer.writerows(rows)
+    return output.getvalue(), len(rows)
+
+def build_webinar_csv() -> str:
+    data = fetch_firebase(FIREBASE_WEBINAR_URL)
+    output = io.StringIO()
+    fields = ["Name", "Company", "Phone", "Email", "Webinar", "Registered At"]
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    rows = []
+    for key, r in data.items():
+        if not isinstance(r, dict):
+            continue
+        rows.append({
+            "Name":          r.get("name", ""),
+            "Company":       r.get("company", ""),
+            "Phone":         r.get("phone", ""),
+            "Email":         r.get("email", ""),
+            "Webinar":       r.get("webinar", "TallyPrime 7.1"),
+            "Registered At": r.get("timestamp", r.get("registeredAt", "")),
+        })
+    rows.sort(key=lambda x: x["Registered At"])
+    writer.writerows(rows)
+    return output.getvalue(), len(rows)
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
@@ -125,6 +194,28 @@ def new_lead():
         "lead_replied":  lead_result.get("success", False),
         "details": {"team": team_results, "lead": lead_result}
     })
+
+@app.route("/export-leads", methods=["GET"])
+def export_leads():
+    """Download all demo requests as a CSV file."""
+    csv_content, count = build_leads_csv()
+    return Response(
+        csv_content,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=demo_leads.csv",
+                 "X-Record-Count": str(count)}
+    )
+
+@app.route("/export-webinar", methods=["GET"])
+def export_webinar():
+    """Download all webinar registrations as a CSV file."""
+    csv_content, count = build_webinar_csv()
+    return Response(
+        csv_content,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=webinar_registrations.csv",
+                 "X-Record-Count": str(count)}
+    )
 
 
 if __name__ == "__main__":
