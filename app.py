@@ -203,20 +203,26 @@ def reply_to_lead(lead: dict) -> dict:
     else:
         cal_link = build_google_calendar_link(name, company, demo_date, demo_time)
 
+        business_type    = lead.get("businessType", "")
+        current_software = lead.get("currentSoftware", "")
+
         body = (
             f"Hello {name}! 👋\n\n"
-            f"Thank you for reaching out to *Optimum Prime Solutions* — "
-            f"Kenya's Certified TallyPrime Partner.\n\n"
-            f"We've received your demo request and our team will confirm your appointment shortly.\n\n"
+            f"Your TallyPrime demo request has been received! 🎉\n\n"
         )
 
         if demo_date and demo_time:
             display_date = format_date_display(demo_date)
             meet_link = generate_meet_link(name, company, demo_date, demo_time)
             body += (
-                f"📅 *Your preferred slot:*\n"
-                f"{display_date} | {demo_time} (EAT)\n\n"
+                f"📅 *Date:* {display_date}\n"
+                f"🕐 *Time:* {demo_time} (EAT)\n"
             )
+            if business_type:
+                body += f"💼 *Business type:* {business_type}\n"
+            if current_software:
+                body += f"💻 *Current software:* {current_software}\n"
+            body += "\n"
             if meet_link:
                 body += (
                     f"📹 *Your Google Meet link:*\n"
@@ -226,13 +232,17 @@ def reply_to_lead(lead: dict) -> dict:
             if cal_link:
                 body += (
                     f"🗓️ *Add to Google Calendar:*\n"
-                    f"{cal_link}\n"
-                    f"_(Clicking this also creates a Meet link automatically in your calendar)_\n\n"
+                    f"{cal_link}\n\n"
                 )
+            body += (
+                f"⏰ *We'll send you a reminder* the day before and 30 minutes before your demo.\n\n"
+            )
+        else:
+            body += "Our team will reach out shortly to confirm your demo slot.\n\n"
 
         body += (
-            f"Our team will confirm your appointment shortly.\n\n"
-            f"In the meantime, feel free to reach us:\n"
+            f"One of our TallyPrime experts will walk you through exactly what the software can do for your business.\n\n"
+            f"Any questions before the demo? Reach us anytime:\n"
             f"📞 *+254 116 246 074*\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
