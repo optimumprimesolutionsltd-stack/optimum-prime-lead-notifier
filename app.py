@@ -74,14 +74,9 @@ def build_google_calendar_link(name: str, company: str, date_str: str, time_slot
             return d.strftime("%Y%m%dT%H%M%SZ")
 
         client_label = company if company else name
-        title   = urllib.parse.quote(f"TallyPrime Demo — {client_label}")
-        details = urllib.parse.quote(
-            f"1-hour TallyPrime demo session with Optimum Prime Solutions.\n"
-            f"Client: {name}" + (f" | {company}" if company else "") + "\n"
-            f"Google Meet link will be shared before the session.\n"
-            f"Contact: +254 116 246 074 | www.optimumprimesolutions.co.ke"
-        )
-        location = urllib.parse.quote("Google Meet (link to be shared by Optimum Prime Solutions)")
+        title    = urllib.parse.quote(f"TallyPrime Demo — {client_label}")
+        details  = urllib.parse.quote(f"TallyPrime demo | Optimum Prime Solutions | +254116246074")
+        location = urllib.parse.quote("Google Meet")
 
         return (
             f"https://calendar.google.com/calendar/render?action=TEMPLATE"
