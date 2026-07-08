@@ -160,21 +160,22 @@ def notify_team(lead: dict) -> list:
     if message:
         body += f"💬 *Message:* {message}\n"
 
-    # Add preferred demo slot + meet link to team alert (no calendar URL — keeps message short)
+    # Add preferred demo slot — NO Meet link at this stage (sent only when demo is confirmed)
     if not is_webinar and demo_date and demo_time:
         display_date = format_date_display(demo_date)
-        meet_link = generate_meet_link(name, company if company != "Not provided" else "", demo_date, demo_time)
         body += (
             f"\n📅 *Preferred slot:* {display_date}\n"
             f"🕐 *Time:* {demo_time} (EAT)\n"
         )
-        if meet_link:
-            body += f"\n📹 *Meet link:* {meet_link}\n"
 
     if count_line:
         body += f"\n{count_line}"
 
-    body += "\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
+    body += (
+        f"\n👉 *Manage in admin panel:*\n"
+        f"https://www.optimumprimesolutions.co.ke/admin\n"
+        f"\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
+    )
 
     client = _client()
     results = []
@@ -214,58 +215,23 @@ def reply_to_lead(lead: dict) -> dict:
         business_type    = lead.get("businessType", "")
         current_software = lead.get("currentSoftware", "")
 
+        # ── "Working on it" message — no Meet link yet ──────────────────────
+        preferred_date_line = ""
+        if demo_date:
+            preferred_date_line = f"\n📅 *Your preferred date:* {format_date_display(demo_date)}"
+            if demo_time:
+                preferred_date_line += f"\n🕐 *Preferred time:* {demo_time} (EAT)"
+
         body = (
             f"Hello {name}! 👋\n\n"
-            f"Your TallyPrime demo request has been received! 🎉\n\n"
-        )
-
-        if demo_date and demo_time:
-            display_date = format_date_display(demo_date)
-            meet_link = generate_meet_link(name, company, demo_date, demo_time)
-            body += (
-                f"📅 *Date:* {display_date}\n"
-                f"🕐 *Time:* {demo_time} (EAT)\n"
-            )
-            if business_type:
-                body += f"💼 *Business type:* {business_type}\n"
-            if current_software:
-                body += f"💻 *Current software:* {current_software}\n"
-            body += "\n"
-            if meet_link:
-                body += (
-                    f"📹 *Your Google Meet link:*\n"
-                    f"{meet_link}\n"
-                    f"_(Click to join at your scheduled time)_\n\n"
-                )
-            if cal_link:
-                body += (
-                    f"🗓️ *Add to Google Calendar:*\n"
-                    f"{cal_link}\n\n"
-                )
-            # Check if demo is today (EAT timezone)
-            try:
-                eat = timezone(timedelta(hours=3))
-                today_eat = datetime.now(eat).strftime("%Y-%m-%d")
-                is_today = (demo_date == today_eat)
-            except Exception:
-                is_today = False
-
-            if is_today:
-                body += (
-                    f"⏰ *Your demo is today!* We'll send you a reminder 30 minutes before your session.\n\n"
-                )
-            else:
-                body += (
-                    f"⏰ *We'll send you a reminder* the day before and 30 minutes before your demo.\n\n"
-                )
-        else:
-            body += "Our team will reach out shortly to confirm your demo slot.\n\n"
-
-        body += (
-            f"One of our TallyPrime experts will walk you through exactly what the software can do for your business.\n\n"
-            f"Any questions before the demo? Reach us anytime:\n"
-            f"📞 *+254 116 246 074*\n"
+            f"Thank you for your interest in TallyPrime! 🎉\n\n"
+            f"We've received your demo request and our team is reviewing it. "
+            f"We'll confirm your demo slot and send you all the details shortly.\n"
+            f"{preferred_date_line}\n\n"
+            f"In the meantime, feel free to explore our website:\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
+            f"Or reach us directly:\n"
+            f"📞 *+254 116 246 074*\n\n"
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
         )
 
@@ -685,6 +651,10 @@ def book_demo():
     )
     if meet_link:
         office_body += f"\n📹 *Meet link:* {meet_link}\n"
+    office_body += (
+        f"\n👉 *Admin panel:*\n"
+        f"https://www.optimumprimesolutions.co.ke/admin"
+    )
 
     twilio_client = _client()
     results = {"office": [], "team": [], "client": None}
