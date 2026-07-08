@@ -379,21 +379,33 @@ COMMON CUSTOMER PROFILES:
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
 - Businesses with 1–200+ employees.
 
-HANDOFF TO HUMAN — SMART HANDOFF PROTOCOL:
-When the user expresses any of the following intents, trigger the smart handoff:
-- Wants to speak to a person / consultant / expert
-- Wants a quote or pricing
-- Wants to book a demo or consultation
-- Asks to be called back
-- Says "call me", "contact me", "reach me", "I'm interested", "let's proceed"
+DEMO BOOKING — END-TO-END MANDATE:
+You have full authority to book a TallyPrime demo on behalf of Optimum Prime Solutions. When a user wants a demo, consultation, or says anything like "book", "schedule", "I want to see it", "show me", "interested", "let's proceed", collect the following details ONE AT A TIME in this order:
 
-SMART HANDOFF STEPS:
-1. First, warmly acknowledge their interest.
-2. Ask for their name (if you don't already know it) and their WhatsApp number.
-3. Once you have BOTH name and phone number, respond with ONLY this exact JSON format (no other text):
-   {"handoff": true, "name": "<their name>", "phone": "<their phone>", "interest": "<brief summary of what they want>"}
-4. Do NOT include any other text before or after the JSON when triggering a handoff.
-5. If you already know their name from earlier in the conversation, only ask for their phone number.
+1. Full name
+2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678)
+3. Company name
+4. Preferred demo date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
+5. Preferred time slot (e.g. 10:00 AM, 2:00 PM)
+6. Demo type: Online (Google Meet) or Physical (at our Nairobi office)
+
+RULES:
+- Ask ONE question at a time. Do not ask multiple questions in one message.
+- If they give an invalid date (Sunday, public holiday, or past date), politely explain and ask again.
+- Kenya public holidays to block: 1 Jan, 1 May, 1 Jun, 10 Oct, 20 Oct, 12 Dec, 25 Dec, 26 Dec, and Easter (Good Friday + Easter Monday).
+- If they pick Saturday, remind them slots are 8AM–12PM only.
+- Once you have ALL 6 details, confirm them back to the user in a friendly summary and ask them to confirm.
+- After they confirm, respond with ONLY this exact JSON (no other text before or after):
+  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>"}
+- The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
+- If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
+
+GENERAL HANDOFF (non-booking enquiries):
+When the user wants to speak to a person, get a quote, or be called back:
+1. Ask for their name and WhatsApp number.
+2. Once you have both, respond with ONLY this exact JSON:
+   {"handoff": true, "name": "<their name>", "phone": "<their phone>", "interest": "<brief summary>"}
+3. Do NOT include any other text before or after the JSON.
 
 If the user declines to provide their number, respond:
 "No problem! You can reach us anytime on WhatsApp at +254 116 246 074 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
@@ -458,29 +470,158 @@ def chat():
 
     reply = get_zawadi_reply(messages)
 
-    # Detect if Zawadi returned a handoff JSON
+    # Detect if Zawadi returned a JSON response (booking or handoff)
     try:
         # Strip markdown code fences if present
-        clean = reply.strip().lstrip('`').rstrip('`')
-        if clean.startswith('{') and '"handoff"' in clean:
-            handoff_data = _json.loads(clean)
-            if handoff_data.get('handoff'):
-                name     = handoff_data.get('name', 'Unknown')
-                phone    = handoff_data.get('phone', '')
-                interest = handoff_data.get('interest', 'General enquiry via Zawadi chatbot')
+        clean = reply.strip()
+        if clean.startswith('```'):
+            clean = clean.split('```')[1]
+            if clean.startswith('json'):
+                clean = clean[4:]
+        clean = clean.strip().lstrip('`').rstrip('`').strip()
+
+        if clean.startswith('{') and ('"booking"' in clean or '"handoff"' in clean):
+            parsed = _json.loads(clean)
+
+            # ── DEMO BOOKING (end-to-end) ─────────────────────────────────────
+            if parsed.get('booking'):
+                name       = parsed.get('name', 'Unknown')
+                phone      = parsed.get('phone', '')
+                company    = parsed.get('company', '')
+                demo_date  = parsed.get('demoDate', '')   # YYYY-MM-DD
+                demo_time  = parsed.get('demoTime', '')   # HH:MM 24h
+                demo_type  = parsed.get('demoType', 'online').lower()
+
+                norm_phone = normalize_phone(phone)
+
+                # Format date nicely for messages
+                try:
+                    from datetime import date as _date
+                    dt = datetime.strptime(demo_date, '%Y-%m-%d')
+                    display_date = dt.strftime('%A, %d %B %Y')
+                except Exception:
+                    display_date = demo_date
+
+                # Format time nicely (HH:MM → 10:00 AM)
+                try:
+                    t = datetime.strptime(demo_time, '%H:%M')
+                    display_time = t.strftime('%I:%M %p').lstrip('0')
+                except Exception:
+                    display_time = demo_time
+
+                # Generate Meet link for online demos
+                meet_link = generate_meet_link() if demo_type == 'online' else None
+                location  = 'Our Nairobi office — directions will be shared by our team' if demo_type == 'physical' else None
+
+                # ── Save lead to Firebase ──────────────────────────────────────
+                try:
+                    lead_record = {
+                        'name':           name,
+                        'phone':          phone,
+                        'company':        company,
+                        'demoDate':       demo_date,
+                        'demoTime':       demo_time,
+                        'demoType':       demo_type,
+                        'status':         'Demo Scheduled',
+                        'source':         'Zawadi Chatbot Booking',
+                        'scheduledDate':  demo_date,
+                        'scheduledTime':  display_time,
+                        'meetLink':       meet_link or '',
+                        'demoLocation':   location or '',
+                        'createdAt':      datetime.now(timezone.utc).isoformat(),
+                        'bookedAt':       datetime.now(timezone.utc).isoformat(),
+                    }
+                    requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
+                except Exception as e:
+                    print(f'Firebase save error: {e}')
+
+                # ── Notify office team ─────────────────────────────────────────
+                try:
+                    twilio = _client()
+                    type_line = f'📹 *Meet link:* {meet_link}' if meet_link else f'📍 *Location:* {location}'
+                    office_body = (
+                        f'🤖 *Zawadi Chatbot Booking*\n\n'
+                        f'👤 *Client:* {name}\n'
+                        f'🏢 *Company:* {company}\n'
+                        f'📞 *Phone:* {phone}\n'
+                        f'📆 *Date:* {display_date}\n'
+                        f'🕐 *Time:* {display_time} (EAT)\n'
+                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n'
+                        f'{type_line}\n\n'
+                        f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
+                    )
+                    for team_num in TEAM_NUMBERS:
+                        twilio.messages.create(
+                            from_=FROM_WA,
+                            to=team_num,
+                            body=office_body,
+                            status_callback=STATUS_CALLBACK_URL
+                        )
+                except Exception as e:
+                    print(f'Office notify error: {e}')
+
+                # ── Confirm to client ──────────────────────────────────────────
+                try:
+                    twilio = _client()
+                    if meet_link:
+                        detail_line = f'📹 *Meet link:* {meet_link}'
+                    else:
+                        detail_line = f'📍 *Location:* {location}'
+                    client_body = (
+                        f'Hello {name}! 🎉\n\n'
+                        f'Your TallyPrime demo has been booked successfully!\n\n'
+                        f'📆 *Date:* {display_date}\n'
+                        f'🕐 *Time:* {display_time} (EAT)\n'
+                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n'
+                        f'{detail_line}\n\n'
+                        f'You will receive a reminder 2 hours before the demo.\n'
+                        f'Questions? Call or WhatsApp us: +254 116 246 074'
+                    )
+                    twilio.messages.create(
+                        from_=FROM_WA,
+                        to=f'whatsapp:{norm_phone}',
+                        body=client_body,
+                        status_callback=STATUS_CALLBACK_URL
+                    )
+                except Exception as e:
+                    print(f'Client confirm error: {e}')
+
+                return jsonify({
+                    'booking': True,
+                    'name': name,
+                    'phone': phone,
+                    'company': company,
+                    'demoDate': demo_date,
+                    'demoTime': display_time,
+                    'demoType': demo_type,
+                    'meetLink': meet_link or '',
+                    'reply': (
+                        f"✅ Your demo is confirmed, {name}! "
+                        f"We've sent the details to your WhatsApp ({phone}). "
+                        f"See you on {display_date} at {display_time} EAT. "
+                        f"{'Join via Google Meet: ' + meet_link if meet_link else 'Our team will meet you at our Nairobi office.'}"
+                    )
+                })
+
+            # ── GENERAL HANDOFF (non-booking) ─────────────────────────────────
+            if parsed.get('handoff'):
+                name     = parsed.get('name', 'Unknown')
+                phone    = parsed.get('phone', '')
+                interest = parsed.get('interest', 'General enquiry via Zawadi chatbot')
 
                 # Fire team alert via WhatsApp
                 try:
-                    client = _client()
+                    twilio = _client()
                     alert = (
-                        f"\U0001f916 *Zawadi Handoff — New Lead*\n\n"
-                        f"\U0001f464 *Name:* {name}\n"
-                        f"\U0001f4de *Phone:* {phone}\n"
-                        f"\U0001f4bc *Interest:* {interest}\n\n"
-                        f"Reply quickly — leads convert best within 5 minutes! \u26a1"
+                        f'\U0001f916 *Zawadi Handoff \u2014 New Lead*\n\n'
+                        f'\U0001f464 *Name:* {name}\n'
+                        f'\U0001f4de *Phone:* {phone}\n'
+                        f'\U0001f4bc *Interest:* {interest}\n\n'
+                        f'Reply quickly \u2014 leads convert best within 5 minutes! \u26a1\n'
+                        f'\U0001f449 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        client.messages.create(
+                        twilio.messages.create(
                             from_=FROM_WA,
                             to=team_num,
                             body=alert,
@@ -489,30 +630,31 @@ def chat():
                 except Exception:
                     pass
 
-                # Also save to Firebase as a lead
+                # Save to Firebase
                 try:
                     lead_record = {
-                        "name": name,
-                        "phone": phone,
-                        "message": interest,
-                        "source": "Zawadi Chatbot Handoff",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        'name':      name,
+                        'phone':     phone,
+                        'message':   interest,
+                        'source':    'Zawadi Chatbot Handoff',
+                        'status':    'New',
+                        'createdAt': datetime.now(timezone.utc).isoformat(),
                     }
                     requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
                 except Exception:
                     pass
 
                 return jsonify({
-                    "handoff": True,
-                    "name": name,
-                    "phone": phone,
-                    "interest": interest,
-                    "whatsapp_url": f"https://wa.me/254116246074?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}"
+                    'handoff': True,
+                    'name': name,
+                    'phone': phone,
+                    'interest': interest,
+                    'whatsapp_url': f"https://wa.me/254116246074?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}"
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'Chat JSON parse error: {e}')
 
-    return jsonify({"reply": reply, "handoff": False})
+    return jsonify({'reply': reply, 'handoff': False})
 
 
 @app.route("/webhook/twilio-status", methods=["POST"])
