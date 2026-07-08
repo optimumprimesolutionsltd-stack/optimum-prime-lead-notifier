@@ -256,6 +256,22 @@ def reply_to_lead(lead: dict) -> dict:
 
 # ── CSV Export Helpers ────────────────────────────────────────────────────────
 
+def to_local_phone(phone: str) -> str:
+    """Convert any Kenyan phone format to local 07XX XXX XXX (10 digits, leading 0)."""
+    p = str(phone).strip().replace(" ", "").replace("-", "")
+    if not p:
+        return p
+    if p.startswith("+254") and len(p) == 13:
+        return "0" + p[4:]          # +254712345678 → 0712345678
+    if p.startswith("254") and len(p) == 12:
+        return "0" + p[3:]          # 254712345678  → 0712345678
+    if p.startswith("0") and len(p) == 10:
+        return p                     # already correct
+    if len(p) == 9:                  # 712345678 (missing leading 0)
+        return "0" + p
+    return p                         # return as-is if unrecognised
+
+
 def build_leads_csv():
     data = fetch_firebase(FIREBASE_LEADS_URL)
     output = io.StringIO()
@@ -270,7 +286,7 @@ def build_leads_csv():
         rows.append({
             "Name":                r.get("name", ""),
             "Company":             r.get("company", ""),
-            "Phone":               r.get("phone", ""),
+            "Phone":               to_local_phone(r.get("phone", "")),
             "Email":               r.get("email", ""),
             "Business Type":       r.get("businessType", ""),
             "Current Software":    r.get("currentSoftware", ""),
@@ -297,7 +313,7 @@ def build_webinar_csv():
         rows.append({
             "Name":          r.get("name", ""),
             "Company":       r.get("company", ""),
-            "Phone":         r.get("phone", ""),
+            "Phone":         to_local_phone(r.get("phone", "")),
             "Email":         r.get("email", ""),
             "Webinar":       r.get("webinar", "TallyPrime 7.1"),
             "Registered At": r.get("timestamp", r.get("registeredAt", "")),
