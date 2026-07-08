@@ -627,6 +627,189 @@ def new_review():
     })
 
 
+@app.route("/book-demo", methods=["POST"])
+def book_demo():
+    """
+    Internal team demo booking endpoint.
+    Notifies: both office numbers, assigned team member(s), and optionally the client.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+
+    client_name    = data.get("clientName", "Unknown")
+    client_phone   = data.get("clientPhone", "")
+    client_email   = data.get("clientEmail", "")
+    client_company = data.get("clientCompany", "")
+    client_industry = data.get("clientIndustry", "")
+    demo_date      = data.get("demoDate", "")
+    demo_time      = data.get("demoTime", "")
+    demo_notes     = data.get("demoNotes", "")
+    team_name      = data.get("teamMemberName", "")
+    team_phone     = data.get("teamMemberPhone", "")
+    team2_name     = data.get("teamMember2Name", "")
+    team2_phone    = data.get("teamMember2Phone", "")
+    notify_client  = data.get("notifyClient", True)
+    notify_email   = data.get("notifyClientEmail", False)
+
+    # Format date nicely
+    display_date = format_date_display(demo_date) if demo_date else demo_date
+
+    # Generate Meet link
+    meet_link = generate_meet_link(client_name, client_company, demo_date, demo_time) if demo_date and demo_time else ""
+
+    # ── Office notification ──────────────────────────────────────────────────
+    notes_line = f"\n📝 *Notes:* {demo_notes}" if demo_notes else ""
+    team2_line = f"\n👥 *2nd team member:* {team2_name} ({team2_phone})" if team2_name else ""
+    email_line = f"\n📧 *Client email:* {client_email}" if client_email else ""
+
+    office_body = (
+        f"📅 *Demo Booked — Optimum Prime Solutions*\n\n"
+        f"👤 *Client:* {client_name}\n"
+        f"🏢 *Company:* {client_company}\n"
+        f"🏭 *Industry:* {client_industry}\n"
+        f"📞 *Client phone:* {client_phone}"
+        f"{email_line}\n\n"
+        f"📆 *Date:* {display_date}\n"
+        f"🕐 *Time:* {demo_time} (EAT)\n"
+        f"👤 *Booked by:* {team_name} ({team_phone})"
+        f"{team2_line}"
+        f"{notes_line}\n"
+    )
+    if meet_link:
+        office_body += f"\n📹 *Meet link:* {meet_link}\n"
+
+    twilio_client = _client()
+    results = {"office": [], "team": [], "client": None}
+
+    # Send to both office numbers
+    for to in TEAM_NUMBERS:
+        try:
+            msg = twilio_client.messages.create(from_=FROM_WA, to=to, body=office_body)
+            results["office"].append({"to": to, "sid": msg.sid, "success": True})
+        except Exception as e:
+            results["office"].append({"to": to, "error": str(e), "success": False})
+
+    # ── Team member notification ─────────────────────────────────────────────
+    def send_team_notification(name: str, phone: str):
+        if not phone:
+            return
+        norm_phone = phone.strip().replace(" ", "")
+        if norm_phone.startswith("0") and len(norm_phone) == 10:
+            norm_phone = "+254" + norm_phone[1:]
+        elif norm_phone.startswith("254") and not norm_phone.startswith("+"):
+            norm_phone = "+" + norm_phone
+        elif not norm_phone.startswith("+"):
+            norm_phone = "+254" + norm_phone
+
+        team_body = (
+            f"📅 *Demo Assignment — Optimum Prime Solutions*\n\n"
+            f"Hi {name}! You've been assigned a TallyPrime demo:\n\n"
+            f"👤 *Client:* {client_name}\n"
+            f"🏢 *Company:* {client_company}\n"
+            f"📞 *Client phone:* {client_phone}\n"
+            f"📆 *Date:* {display_date}\n"
+            f"🕐 *Time:* {demo_time} (EAT)\n"
+        )
+        if meet_link:
+            team_body += f"\n📹 *Meet link:* {meet_link}\n"
+        if demo_notes:
+            team_body += f"\n📝 *Notes:* {demo_notes}\n"
+        team_body += "\n_Please confirm with the client 24 hours before the demo._"
+
+        try:
+            msg = twilio_client.messages.create(from_=FROM_WA, to=f"whatsapp:{norm_phone}", body=team_body)
+            results["team"].append({"to": norm_phone, "sid": msg.sid, "success": True})
+        except Exception as e:
+            results["team"].append({"to": norm_phone, "error": str(e), "success": False})
+
+    send_team_notification(team_name, team_phone)
+    if team2_name and team2_phone:
+        send_team_notification(team2_name, team2_phone)
+
+    # ── Client notification ──────────────────────────────────────────────────
+    if notify_client and client_phone:
+        norm_client = client_phone.strip().replace(" ", "")
+        if norm_client.startswith("0") and len(norm_client) == 10:
+            norm_client = "+254" + norm_client[1:]
+        elif norm_client.startswith("254") and not norm_client.startswith("+"):
+            norm_client = "+" + norm_client
+        elif not norm_client.startswith("+"):
+            norm_client = "+254" + norm_client
+
+        cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time)
+
+        client_body = (
+            f"Hello {client_name}! 👋\n\n"
+            f"Your TallyPrime demo has been scheduled with Optimum Prime Solutions.\n\n"
+            f"📆 *Date:* {display_date}\n"
+            f"🕐 *Time:* {demo_time} (EAT)\n"
+        )
+        if meet_link:
+            client_body += (
+                f"\n📹 *Your Google Meet link:*\n"
+                f"{meet_link}\n"
+                f"_(Click to join at your scheduled time)_\n"
+            )
+        if cal_link:
+            client_body += (
+                f"\n🗓️ *Add to Google Calendar:*\n"
+                f"{cal_link}\n"
+            )
+        client_body += (
+            f"\n⏰ We'll send you a reminder the day before your demo.\n\n"
+            f"Any questions? Reach us anytime:\n"
+            f"📞 *+254 116 246 074*\n"
+            f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
+            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
+        )
+
+        try:
+            msg = twilio_client.messages.create(
+                from_=FROM_WA,
+                to=f"whatsapp:{norm_client}",
+                body=client_body,
+                status_callback=STATUS_CALLBACK_URL,
+            )
+            results["client"] = {"to": norm_client, "sid": msg.sid, "success": True}
+        except Exception as e:
+            results["client"] = {"to": norm_client, "error": str(e), "success": False}
+
+    # ── Save booking to Firebase ─────────────────────────────────────────────
+    try:
+        booking_record = {
+            "clientName": client_name,
+            "clientPhone": client_phone,
+            "clientEmail": client_email,
+            "clientCompany": client_company,
+            "clientIndustry": client_industry,
+            "demoDate": demo_date,
+            "demoTime": demo_time,
+            "demoNotes": demo_notes,
+            "teamMember": team_name,
+            "teamPhone": team_phone,
+            "teamMember2": team2_name,
+            "teamPhone2": team2_phone,
+            "meetLink": meet_link,
+            "bookedAt": datetime.now(timezone.utc).isoformat(),
+            "source": "admin_booking",
+            "status": "scheduled",
+        }
+        firebase_demos_url = f"{FIREBASE_BASE}/booked_demos.json"
+        requests.post(firebase_demos_url, json=booking_record, timeout=5)
+    except Exception:
+        pass
+
+    office_ok = sum(1 for r in results["office"] if r.get("success"))
+    team_ok   = sum(1 for r in results["team"] if r.get("success"))
+
+    return jsonify({
+        "success": True,
+        "office_notified": office_ok,
+        "team_notified": team_ok,
+        "client_notified": results["client"].get("success", False) if results["client"] else False,
+        "details": results
+    })
+
+
 @app.route("/export-leads", methods=["GET"])
 def export_leads():
     """Download all demo requests as a CSV file."""
