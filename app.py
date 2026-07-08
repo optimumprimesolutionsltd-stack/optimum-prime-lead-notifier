@@ -379,15 +379,18 @@ COMMON CUSTOMER PROFILES:
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
 - Businesses with 1–200+ employees.
 
-DEMO BOOKING — END-TO-END MANDATE:
-You have full authority to book a TallyPrime demo on behalf of Optimum Prime Solutions. When a user wants a demo, consultation, or says anything like "book", "schedule", "I want to see it", "show me", "interested", "let's proceed", collect the following details ONE AT A TIME in this order:
+BOOKING MANDATE — DEMO OR CONSULTATION:
+You have full authority to collect booking requests on behalf of Optimum Prime Solutions. When a user wants to book, schedule, or says anything like "book", "I want to see it", "show me", "interested", "let's proceed", "consultation", "EOS", first ask:
+"Would you like to book a *TallyPrime Demo* (see the software in action) or an *EOS® Business Consultation* (a 90-minute session to explore the Entrepreneurial Operating System for your leadership team)?"
+
+Then collect the following details ONE AT A TIME in this order:
 
 1. Full name
 2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678)
 3. Company name
-4. Preferred demo date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
+4. Preferred date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
 5. Preferred time slot (e.g. 10:00 AM, 2:00 PM)
-6. Demo type: Online (Google Meet) or Physical (at our Nairobi office)
+6. Session type: Online (Google Meet) or Physical (at our Nairobi office)
 
 RULES:
 - Ask ONE question at a time. Do not ask multiple questions in one message.
@@ -396,8 +399,9 @@ RULES:
 - If they pick Saturday, remind them slots are 8AM–12PM only.
 - Once you have ALL 6 details, confirm them back to the user in a friendly summary and ask them to confirm.
 - After they confirm, respond with ONLY this exact JSON (no other text before or after):
-  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>"}
+  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation>"}
 - The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
+- Set requestType to "consultation" if the user chose EOS® Business Consultation, otherwise "demo".
 - IMPORTANT: The booking is NOT immediately confirmed. Our team reviews and approves the slot. Tell the user: "We've received your request and our team will confirm your slot shortly via WhatsApp."
 - Do NOT tell the user the demo is confirmed or give them a Meet link — that comes later from our team.
 - If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
@@ -492,7 +496,8 @@ def chat():
                 company    = parsed.get('company', '')
                 demo_date  = parsed.get('demoDate', '')   # YYYY-MM-DD
                 demo_time  = parsed.get('demoTime', '')   # HH:MM 24h
-                demo_type  = parsed.get('demoType', 'online').lower()
+                demo_type    = parsed.get('demoType', 'online').lower()
+                request_type = parsed.get('requestType', 'demo').lower()
 
                 norm_phone = normalize_phone(phone)
 
@@ -520,9 +525,10 @@ def chat():
                         'demoDate':    demo_date,
                         'demoTime':    demo_time,
                         'demoType':    demo_type,
+                        'requestType': request_type,
                         'status':      'New',
                         'source':      'Zawadi Chatbot Booking',
-                        'message':     f'Preferred: {display_date} at {display_time} ({demo_type})',
+                        'message':     f'Preferred: {display_date} at {display_time} ({demo_type}) — {"Consultation" if request_type == "consultation" else "Demo"}',
                         'createdAt':   datetime.now(timezone.utc).isoformat(),
                     }
                     requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
@@ -532,14 +538,16 @@ def chat():
                 # ── Notify office team (pending approval) ─────────────────────
                 try:
                     twilio = _client()
+                    req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else '📊 TallyPrime Demo'
                     office_body = (
-                        f'🤖 *New Demo Request via Zawadi*\n\n'
+                        f'🤖 *New {"Consultation" if request_type == "consultation" else "Demo"} Request via Zawadi*\n\n'
+                        f'📌 *Request type:* {req_label}\n'
                         f'👤 *Client:* {name}\n'
                         f'🏢 *Company:* {company}\n'
                         f'📞 *Phone:* {phone}\n'
                         f'📆 *Preferred Date:* {display_date}\n'
                         f'🕐 *Preferred Time:* {display_time} (EAT)\n'
-                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
+                        f'📌 *Session type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
                         f'⚠️ *Pending your confirmation* — please review and confirm the slot.\n'
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
