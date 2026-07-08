@@ -836,5 +836,207 @@ def export_webinar():
     )
 
 
+# ── 2-Hour Demo Reminders ────────────────────────────────────────────────────
+
+def normalize_phone(phone: str) -> str:
+    """Normalise a Kenyan phone number to E.164 format."""
+    p = phone.strip().replace(" ", "")
+    if p.startswith("0") and len(p) == 10:
+        return "+254" + p[1:]
+    if p.startswith("254") and not p.startswith("+"):
+        return "+" + p
+    if not p.startswith("+"):
+        return "+254" + p
+    return p
+
+
+@app.route("/send-reminders", methods=["POST", "GET"])
+def send_reminders():
+    """
+    Called every 15 minutes (by the scheduler below or an external cron).
+    Scans all leads in Firebase for demos whose scheduledDate + scheduledTime
+    falls within the next 2 hours (±15 min window) and sends:
+      - Team member(s): a reminder WhatsApp
+      - Client: a reminder WhatsApp asking them to confirm attendance
+    Stores a `reminderSent` flag on each lead so reminders are sent only once.
+    """
+    now_eat = datetime.now(timezone(timedelta(hours=3)))
+    window_start = now_eat + timedelta(hours=1, minutes=45)   # 1h 45m from now
+    window_end   = now_eat + timedelta(hours=2, minutes=15)   # 2h 15m from now
+
+    # Fetch all leads
+    leads_data = fetch_firebase(FIREBASE_LEADS_URL)
+    # Also check siteData.leads (admin-booked demos)
+    site_data  = fetch_firebase(f"{FIREBASE_BASE}/siteData.json")
+    site_leads_raw = site_data.get("leads", []) if site_data else []
+    if isinstance(site_leads_raw, list):
+        site_leads = {str(l.get("id", i)): l for i, l in enumerate(site_leads_raw) if l}
+    elif isinstance(site_leads_raw, dict):
+        site_leads = site_leads_raw
+    else:
+        site_leads = {}
+
+    # Merge both sources
+    all_leads = {**leads_data, **site_leads}
+
+    twilio_client = _client()
+    sent_count = 0
+    skipped_count = 0
+    results = []
+
+    for lead_id, lead in all_leads.items():
+        if not isinstance(lead, dict):
+            continue
+
+        status         = lead.get("status", "")
+        scheduled_date = lead.get("scheduledDate") or lead.get("demoDate", "")
+        scheduled_time = lead.get("scheduledTime") or lead.get("demoTime", "")
+        meet_sent      = lead.get("meetSent", False)
+        reminder_sent  = lead.get("reminderSent", False)
+
+        # Only remind for confirmed scheduled demos that haven't been reminded yet
+        if status != "Demo Scheduled" or not scheduled_date or not scheduled_time:
+            continue
+        if not meet_sent:
+            continue
+        if reminder_sent:
+            skipped_count += 1
+            continue
+
+        # Parse the demo datetime in EAT
+        try:
+            # scheduled_time may be "10:00" (24h) or "10:00 AM" (12h)
+            time_str = scheduled_time.strip()
+            if "AM" in time_str.upper() or "PM" in time_str.upper():
+                dt_naive = datetime.strptime(f"{scheduled_date} {time_str}", "%Y-%m-%d %I:%M %p")
+            else:
+                dt_naive = datetime.strptime(f"{scheduled_date} {time_str}", "%Y-%m-%d %H:%M")
+            eat = timezone(timedelta(hours=3))
+            demo_dt = dt_naive.replace(tzinfo=eat)
+        except Exception:
+            continue
+
+        # Check if demo falls in the 2-hour reminder window
+        if not (window_start <= demo_dt <= window_end):
+            continue
+
+        client_name    = lead.get("name", "Client")
+        client_company = lead.get("company", "")
+        client_phone   = lead.get("phone", "")
+        team_name      = lead.get("teamMemberName", "")
+        team_phone     = lead.get("teamMemberPhone", "")
+        demo_type      = lead.get("demoType", "online")
+        demo_location  = lead.get("demoLocation", "")
+        meet_link      = lead.get("meetLink", "")
+        display_date   = format_date_display(scheduled_date)
+        demo_type_label = "💻 Online" if demo_type == "online" else "📍 Physical"
+
+        reminder_results = {"lead_id": lead_id, "client": client_name, "team": [], "client_msg": None}
+
+        # ── Team member reminder ──────────────────────────────────────────────
+        def send_team_reminder(name: str, phone: str):
+            if not name or not phone:
+                return
+            norm = normalize_phone(phone)
+            body = (
+                f"🔔 *Demo Reminder — 2 Hours Away*\n\n"
+                f"Hi {name}! Your TallyPrime demo is coming up in 2 hours:\n\n"
+                f"👤 *Client:* {client_name}\n"
+                f"🏢 *Company:* {client_company}\n"
+                f"📆 *Date:* {display_date}\n"
+                f"🕐 *Time:* {scheduled_time} EAT\n"
+                f"📌 *Type:* {demo_type_label}\n"
+            )
+            if demo_type == "physical" and demo_location:
+                body += f"📍 *Location:* {demo_location}\n"
+            if meet_link:
+                body += f"\n📹 *Meet link:* {meet_link}\n"
+            body += (
+                f"\n✅ Please confirm the client is ready and join on time.\n"
+                f"👉 *Admin panel:* https://www.optimumprimesolutions.co.ke/admin"
+            )
+            try:
+                msg = twilio_client.messages.create(from_=FROM_WA, to=f"whatsapp:{norm}", body=body)
+                reminder_results["team"].append({"to": norm, "sid": msg.sid, "success": True})
+            except Exception as e:
+                reminder_results["team"].append({"to": norm, "error": str(e), "success": False})
+
+        send_team_reminder(team_name, team_phone)
+        # Extra team members
+        for extra in lead.get("extraTeam", []):
+            if isinstance(extra, dict):
+                send_team_reminder(extra.get("name", ""), extra.get("phone", ""))
+
+        # ── Client reminder ───────────────────────────────────────────────────
+        if client_phone:
+            norm_client = normalize_phone(client_phone)
+            client_body = (
+                f"Hello {client_name}! 👋\n\n"
+                f"This is a reminder that your TallyPrime demo with Optimum Prime Solutions "
+                f"is in *2 hours*:\n\n"
+                f"📆 *Date:* {display_date}\n"
+                f"🕐 *Time:* {scheduled_time} EAT\n"
+            )
+            if demo_type == "online":
+                if meet_link:
+                    client_body += f"\n📹 *Your Google Meet link:*\n{meet_link}\n"
+                client_body += "\n_Please join a few minutes early to test your connection._\n"
+            else:
+                if demo_location:
+                    client_body += f"\n📍 *Location:* {demo_location}\n"
+                client_body += "\n🤝 Our team will meet you at the scheduled time.\n"
+            client_body += (
+                f"\nReply *CONFIRM* to confirm you\'ll attend, or call us at "
+                f"*+254 116 246 074* if you need to reschedule.\n\n"
+                f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
+            )
+            try:
+                msg = twilio_client.messages.create(
+                    from_=FROM_WA,
+                    to=f"whatsapp:{norm_client}",
+                    body=client_body,
+                    status_callback=STATUS_CALLBACK_URL,
+                )
+                reminder_results["client_msg"] = {"to": norm_client, "sid": msg.sid, "success": True}
+            except Exception as e:
+                reminder_results["client_msg"] = {"to": norm_client, "error": str(e), "success": False}
+
+        # ── Mark reminderSent in Firebase ─────────────────────────────────────
+        try:
+            patch_url = f"{FIREBASE_BASE}/leads/{lead_id}.json"
+            requests.patch(patch_url, json={"reminderSent": True}, timeout=5)
+        except Exception:
+            pass
+
+        sent_count += 1
+        results.append(reminder_results)
+
+    return jsonify({
+        "success": True,
+        "checked_at": now_eat.isoformat(),
+        "window": {"from": window_start.isoformat(), "to": window_end.isoformat()},
+        "reminders_sent": sent_count,
+        "already_reminded": skipped_count,
+        "details": results,
+    })
+
+
+# ── Self-scheduling: call /send-reminders every 15 minutes ────────────────────
+import threading
+
+def _reminder_loop():
+    """Background thread: hits /send-reminders every 15 minutes."""
+    import time
+    while True:
+        time.sleep(15 * 60)  # wait 15 minutes
+        try:
+            requests.post(f"{SERVICE_URL}/send-reminders", timeout=30)
+        except Exception:
+            pass
+
+_reminder_thread = threading.Thread(target=_reminder_loop, daemon=True)
+_reminder_thread.start()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
