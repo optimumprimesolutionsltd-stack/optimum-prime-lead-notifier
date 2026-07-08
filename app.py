@@ -398,6 +398,8 @@ RULES:
 - After they confirm, respond with ONLY this exact JSON (no other text before or after):
   {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>"}
 - The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
+- IMPORTANT: The booking is NOT immediately confirmed. Our team reviews and approves the slot. Tell the user: "We've received your request and our team will confirm your slot shortly via WhatsApp."
+- Do NOT tell the user the demo is confirmed or give them a Meet link — that comes later from our team.
 - If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
 
 GENERAL HANDOFF (non-booking enquiries):
@@ -509,45 +511,36 @@ def chat():
                 except Exception:
                     display_time = demo_time
 
-                # Generate Meet link for online demos
-                meet_link = generate_meet_link() if demo_type == 'online' else None
-                location  = 'Our Nairobi office — directions will be shared by our team' if demo_type == 'physical' else None
-
-                # ── Save lead to Firebase ──────────────────────────────────────
+                # ── Save lead to Firebase as New (pending team confirmation) ──────
                 try:
                     lead_record = {
-                        'name':           name,
-                        'phone':          phone,
-                        'company':        company,
-                        'demoDate':       demo_date,
-                        'demoTime':       demo_time,
-                        'demoType':       demo_type,
-                        'status':         'Demo Scheduled',
-                        'source':         'Zawadi Chatbot Booking',
-                        'scheduledDate':  demo_date,
-                        'scheduledTime':  display_time,
-                        'meetLink':       meet_link or '',
-                        'demoLocation':   location or '',
-                        'createdAt':      datetime.now(timezone.utc).isoformat(),
-                        'bookedAt':       datetime.now(timezone.utc).isoformat(),
+                        'name':        name,
+                        'phone':       phone,
+                        'company':     company,
+                        'demoDate':    demo_date,
+                        'demoTime':    demo_time,
+                        'demoType':    demo_type,
+                        'status':      'New',
+                        'source':      'Zawadi Chatbot Booking',
+                        'message':     f'Preferred: {display_date} at {display_time} ({demo_type})',
+                        'createdAt':   datetime.now(timezone.utc).isoformat(),
                     }
                     requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
                 except Exception as e:
                     print(f'Firebase save error: {e}')
 
-                # ── Notify office team ─────────────────────────────────────────
+                # ── Notify office team (pending approval) ─────────────────────
                 try:
                     twilio = _client()
-                    type_line = f'📹 *Meet link:* {meet_link}' if meet_link else f'📍 *Location:* {location}'
                     office_body = (
-                        f'🤖 *Zawadi Chatbot Booking*\n\n'
+                        f'🤖 *New Demo Request via Zawadi*\n\n'
                         f'👤 *Client:* {name}\n'
                         f'🏢 *Company:* {company}\n'
                         f'📞 *Phone:* {phone}\n'
-                        f'📆 *Date:* {display_date}\n'
-                        f'🕐 *Time:* {display_time} (EAT)\n'
-                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n'
-                        f'{type_line}\n\n'
+                        f'📆 *Preferred Date:* {display_date}\n'
+                        f'🕐 *Preferred Time:* {display_time} (EAT)\n'
+                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
+                        f'⚠️ *Pending your confirmation* — please review and confirm the slot.\n'
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
@@ -560,21 +553,17 @@ def chat():
                 except Exception as e:
                     print(f'Office notify error: {e}')
 
-                # ── Confirm to client ──────────────────────────────────────────
+                # ── Send working-on-it message to client (no Meet link yet) ────
                 try:
                     twilio = _client()
-                    if meet_link:
-                        detail_line = f'📹 *Meet link:* {meet_link}'
-                    else:
-                        detail_line = f'📍 *Location:* {location}'
                     client_body = (
-                        f'Hello {name}! 🎉\n\n'
-                        f'Your TallyPrime demo has been booked successfully!\n\n'
+                        f'Hello {name}! 👋\n\n'
+                        f'Thank you for requesting a TallyPrime demo. We have received your preferred slot:\n\n'
                         f'📆 *Date:* {display_date}\n'
                         f'🕐 *Time:* {display_time} (EAT)\n'
-                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n'
-                        f'{detail_line}\n\n'
-                        f'You will receive a reminder 2 hours before the demo.\n'
+                        f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
+                        f'Our team is reviewing your request and will confirm the slot shortly. '
+                        f'You will receive a confirmation message with all the details once approved.\n\n'
                         f'Questions? Call or WhatsApp us: +254 116 246 074'
                     )
                     twilio.messages.create(
@@ -584,7 +573,7 @@ def chat():
                         status_callback=STATUS_CALLBACK_URL
                     )
                 except Exception as e:
-                    print(f'Client confirm error: {e}')
+                    print(f'Client notify error: {e}')
 
                 return jsonify({
                     'booking': True,
@@ -594,12 +583,10 @@ def chat():
                     'demoDate': demo_date,
                     'demoTime': display_time,
                     'demoType': demo_type,
-                    'meetLink': meet_link or '',
                     'reply': (
-                        f"✅ Your demo is confirmed, {name}! "
-                        f"We've sent the details to your WhatsApp ({phone}). "
-                        f"See you on {display_date} at {display_time} EAT. "
-                        f"{'Join via Google Meet: ' + meet_link if meet_link else 'Our team will meet you at our Nairobi office.'}"
+                        f"✅ Thank you, {name}! We've received your demo request for {display_date} at {display_time}. "
+                        f"Our team will review and confirm your slot shortly — you'll get a WhatsApp message once it's confirmed. "
+                        f"Questions? Call us on +254 116 246 074."
                     )
                 })
 
