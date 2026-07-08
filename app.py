@@ -615,6 +615,9 @@ def book_demo():
     team_phone     = data.get("teamMemberPhone", "")
     team2_name     = data.get("teamMember2Name", "")
     team2_phone    = data.get("teamMember2Phone", "")
+    team3_name     = data.get("teamMember3Name", "")
+    team3_phone    = data.get("teamMember3Phone", "")
+    source         = data.get("source", "admin_booking")
     notify_client  = data.get("notifyClient", True)
     notify_email   = data.get("notifyClientEmail", False)
 
@@ -629,6 +632,7 @@ def book_demo():
     # ── Office notification ──────────────────────────────────────────────────
     notes_line = f"\n📝 *Notes:* {demo_notes}" if demo_notes else ""
     team2_line = f"\n👥 *2nd team member:* {team2_name} ({team2_phone})" if team2_name else ""
+    team3_line = f"\n👥 *3rd team member:* {team3_name} ({team3_phone})" if team3_name else ""
     email_line = f"\n📧 *Client email:* {client_email}" if client_email else ""
 
     location_line = f"\n📍 *Location:* {demo_location}" if demo_location else ""
@@ -647,6 +651,7 @@ def book_demo():
         f"{location_line}\n"
         f"👤 *Booked by:* {team_name} ({team_phone})"
         f"{team2_line}"
+        f"{team3_line}"
         f"{notes_line}\n"
     )
     if meet_link:
@@ -706,6 +711,8 @@ def book_demo():
     send_team_notification(team_name, team_phone)
     if team2_name and team2_phone:
         send_team_notification(team2_name, team2_phone)
+    if team3_name and team3_phone:
+        send_team_notification(team3_name, team3_phone)
 
     # ── Client notification ──────────────────────────────────────────────────
     if notify_client and client_phone:
@@ -719,9 +726,15 @@ def book_demo():
 
         cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time)
 
+        is_reschedule = source == "reschedule"
+        intro_line = (
+            f"Your TallyPrime demo has been *rescheduled*. Here are the updated details:"
+            if is_reschedule else
+            f"Your TallyPrime demo has been scheduled with Optimum Prime Solutions."
+        )
         client_body = (
             f"Hello {client_name}! 👋\n\n"
-            f"Your TallyPrime demo has been scheduled with Optimum Prime Solutions.\n\n"
+            f"{intro_line}\n\n"
             f"📆 *Date:* {display_date}\n"
             f"🕐 *Time:* {demo_time} (EAT)\n"
         )
@@ -776,9 +789,11 @@ def book_demo():
             "teamPhone": team_phone,
             "teamMember2": team2_name,
             "teamPhone2": team2_phone,
+            "teamMember3": team3_name,
+            "teamPhone3": team3_phone,
             "meetLink": meet_link,
             "bookedAt": datetime.now(timezone.utc).isoformat(),
-            "source": "admin_booking",
+            "source": source,
             "status": "scheduled",
         }
         firebase_demos_url = f"{FIREBASE_BASE}/booked_demos.json"
