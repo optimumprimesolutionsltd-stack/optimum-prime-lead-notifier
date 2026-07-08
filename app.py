@@ -643,6 +643,8 @@ def book_demo():
     demo_date      = data.get("demoDate", "")
     demo_time      = data.get("demoTime", "")
     demo_notes     = data.get("demoNotes", "")
+    demo_type      = data.get("demoType", "online").lower()  # "online" or "physical"
+    demo_location  = data.get("demoLocation", "")  # physical location address
     team_name      = data.get("teamMemberName", "")
     team_phone     = data.get("teamMemberPhone", "")
     team2_name     = data.get("teamMember2Name", "")
@@ -653,13 +655,18 @@ def book_demo():
     # Format date nicely
     display_date = format_date_display(demo_date) if demo_date else demo_date
 
-    # Generate Meet link
-    meet_link = generate_meet_link(client_name, client_company, demo_date, demo_time) if demo_date and demo_time else ""
+    # Generate Meet link only for online demos
+    meet_link = ""
+    if demo_type == "online" and demo_date and demo_time:
+        meet_link = generate_meet_link(client_name, client_company, demo_date, demo_time)
 
     # ── Office notification ──────────────────────────────────────────────────
     notes_line = f"\n📝 *Notes:* {demo_notes}" if demo_notes else ""
     team2_line = f"\n👥 *2nd team member:* {team2_name} ({team2_phone})" if team2_name else ""
     email_line = f"\n📧 *Client email:* {client_email}" if client_email else ""
+
+    location_line = f"\n📍 *Location:* {demo_location}" if demo_location else ""
+    demo_type_label = "🖥️ Online (Google Meet)" if demo_type == "online" else "🤝 Physical"
 
     office_body = (
         f"📅 *Demo Booked — Optimum Prime Solutions*\n\n"
@@ -670,6 +677,8 @@ def book_demo():
         f"{email_line}\n\n"
         f"📆 *Date:* {display_date}\n"
         f"🕐 *Time:* {demo_time} (EAT)\n"
+        f"📌 *Type:* {demo_type_label}"
+        f"{location_line}\n"
         f"👤 *Booked by:* {team_name} ({team_phone})"
         f"{team2_line}"
         f"{notes_line}\n"
@@ -708,7 +717,10 @@ def book_demo():
             f"📞 *Client phone:* {client_phone}\n"
             f"📆 *Date:* {display_date}\n"
             f"🕐 *Time:* {demo_time} (EAT)\n"
+            f"📌 *Type:* {demo_type_label}\n"
         )
+        if demo_type == "physical" and demo_location:
+            team_body += f"📍 *Location:* {demo_location}\n"
         if meet_link:
             team_body += f"\n📹 *Meet link:* {meet_link}\n"
         if demo_notes:
@@ -743,17 +755,23 @@ def book_demo():
             f"📆 *Date:* {display_date}\n"
             f"🕐 *Time:* {demo_time} (EAT)\n"
         )
-        if meet_link:
-            client_body += (
-                f"\n📹 *Your Google Meet link:*\n"
-                f"{meet_link}\n"
-                f"_(Click to join at your scheduled time)_\n"
-            )
-        if cal_link:
-            client_body += (
-                f"\n🗓️ *Add to Google Calendar:*\n"
-                f"{cal_link}\n"
-            )
+        if demo_type == "online":
+            if meet_link:
+                client_body += (
+                    f"\n📹 *Your Google Meet link:*\n"
+                    f"{meet_link}\n"
+                    f"_(Click to join at your scheduled time)_\n"
+                )
+            if cal_link:
+                client_body += (
+                    f"\n🗓️ *Add to Google Calendar:*\n"
+                    f"{cal_link}\n"
+                )
+        else:
+            # Physical demo
+            if demo_location:
+                client_body += f"\n📍 *Location:* {demo_location}\n"
+            client_body += f"\n🤝 Our team will meet you in person at the scheduled time.\n"
         client_body += (
             f"\n⏰ We'll send you a reminder the day before your demo.\n\n"
             f"Any questions? Reach us anytime:\n"
