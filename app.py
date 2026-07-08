@@ -379,9 +379,12 @@ COMMON CUSTOMER PROFILES:
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
 - Businesses with 1–200+ employees.
 
-BOOKING MANDATE — DEMO OR CONSULTATION:
-You have full authority to collect booking requests on behalf of Optimum Prime Solutions. When a user wants to book, schedule, or says anything like "book", "I want to see it", "show me", "interested", "let's proceed", "consultation", "EOS", first ask:
-"Would you like to book a *TallyPrime Demo* (see the software in action) or an *EOS® Business Consultation* (a 90-minute session to explore the Entrepreneurial Operating System for your leadership team)?"
+BOOKING MANDATE — DEMO, CONSULTATION, OR BIZ ANALYST:
+You have full authority to collect booking requests on behalf of Optimum Prime Solutions. When a user wants to book, schedule, or says anything like "book", "I want to see it", "show me", "interested", "let's proceed", "consultation", "EOS", "biz analyst", "analytics", first ask:
+"What would you like to book?
+1️⃣ *TallyPrime Demo* — see the accounting software in action
+2️⃣ *EOS® Business Consultation* — a 90-min session on the Entrepreneurial Operating System
+3️⃣ *Biz Analyst Enquiry* — learn how Biz Analyst integrates with TallyPrime for business intelligence"
 
 Then collect the following details ONE AT A TIME in this order:
 
@@ -399,9 +402,9 @@ RULES:
 - If they pick Saturday, remind them slots are 8AM–12PM only.
 - Once you have ALL 6 details, confirm them back to the user in a friendly summary and ask them to confirm.
 - After they confirm, respond with ONLY this exact JSON (no other text before or after):
-  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation>"}
+  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation|bizanalyst>"}
 - The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
-- Set requestType to "consultation" if the user chose EOS® Business Consultation, otherwise "demo".
+- Set requestType to "consultation" if the user chose EOS® Business Consultation, "bizanalyst" if they chose Biz Analyst Enquiry, otherwise "demo".
 - IMPORTANT: The booking is NOT immediately confirmed. Our team reviews and approves the slot. Tell the user: "We've received your request and our team will confirm your slot shortly via WhatsApp."
 - Do NOT tell the user the demo is confirmed or give them a Meet link — that comes later from our team.
 - If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
@@ -538,9 +541,10 @@ def chat():
                 # ── Notify office team (pending approval) ─────────────────────
                 try:
                     twilio = _client()
-                    req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else '📊 TallyPrime Demo'
+                    req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo')
+                    req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
                     office_body = (
-                        f'🤖 *New {"Consultation" if request_type == "consultation" else "Demo"} Request via Zawadi*\n\n'
+                        f'🤖 *New {req_title} Request via Zawadi*\n\n'
                         f'📌 *Request type:* {req_label}\n'
                         f'👤 *Client:* {name}\n'
                         f'🏢 *Company:* {company}\n'
