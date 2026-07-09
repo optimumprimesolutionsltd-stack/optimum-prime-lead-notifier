@@ -11,36 +11,64 @@ import hashlib
 import urllib.parse
 import requests
 from datetime import datetime, timedelta, timezone
-from twilio.rest import Client
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from openai import OpenAI
 
-ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN")
-FROM_WA     = "whatsapp:+14155238886"
+# ── Meta WhatsApp Cloud API config ───────────────────────────────────────────
+# Set these in Render environment variables:
+#   META_WA_TOKEN        — permanent system user access token from Meta Business Manager
+#   META_WA_PHONE_ID     — Phone Number ID from WhatsApp Manager (not the phone number itself)
+META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "")
+META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "")
+META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
 
 FIREBASE_BASE        = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
 FIREBASE_WEBINAR_URL = f"{FIREBASE_BASE}/webinar_registrants.json"
 FIREBASE_LEADS_URL   = f"{FIREBASE_BASE}/leads.json"
 
+# Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
 TEAM_NUMBERS = [
-    "whatsapp:+254758449475",
-    "whatsapp:+254116246074",
+    "+254758449475",
+    "+254116246074",
 ]
 
-# Public URL of this Render service (used as Twilio status callback)
 SERVICE_URL = os.environ.get("SERVICE_URL", "https://optimum-prime-lead-notifier.onrender.com")
-STATUS_CALLBACK_URL = f"{SERVICE_URL}/webhook/twilio-status"
-
-# In-memory store: SID -> recipient info (for failure alerts)
-_pending_messages: dict = {}
 
 app = Flask(__name__)
 CORS(app)
 
-def _client():
-    return Client(ACCOUNT_SID, AUTH_TOKEN)
+
+def _wa_send(to: str, body: str) -> dict:
+    """
+    Send a WhatsApp text message via Meta Cloud API.
+    `to` should be E.164 format, e.g. '+254712345678'.
+    Returns a dict with keys: success (bool), message_id (str), error (str).
+    """
+    # Strip leading '+' — Meta API expects digits only (no + prefix)
+    to_clean = to.lstrip("+")
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_clean,
+        "type": "text",
+        "text": {"body": body, "preview_url": False},
+    }
+    headers = {
+        "Authorization": f"Bearer {META_WA_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(META_WA_API_URL, json=payload, headers=headers, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and "messages" in data:
+            return {"success": True, "message_id": data["messages"][0].get("id", ""), "error": ""}
+        else:
+            err = data.get("error", {}).get("message", str(data))
+            print(f"[Meta WA] Send failed to {to}: {err}")
+            return {"success": False, "message_id": "", "error": err}
+    except Exception as e:
+        print(f"[Meta WA] Exception sending to {to}: {e}")
+        return {"success": False, "message_id": "", "error": str(e)}
 
 
 # ── Google Meet Link Generator ───────────────────────────────────────────────
@@ -177,14 +205,10 @@ def notify_team(lead: dict) -> list:
         f"\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
     )
 
-    client = _client()
     results = []
     for to in TEAM_NUMBERS:
-        try:
-            msg = client.messages.create(from_=FROM_WA, to=to, body=body)
-            results.append({"to": to, "sid": msg.sid, "success": True})
-        except Exception as e:
-            results.append({"to": to, "error": str(e), "success": False})
+        r = _wa_send(to, body)
+        results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
     return results
 
 
@@ -235,23 +259,11 @@ def reply_to_lead(lead: dict) -> dict:
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · Biz Analyst_"
         )
 
-    client = _client()
-    try:
-        msg = client.messages.create(
-            from_=FROM_WA,
-            to=f"whatsapp:{phone}",
-            body=body,
-            status_callback=STATUS_CALLBACK_URL,
-        )
-        # Track pending message for failure alerting
-        _pending_messages[msg.sid] = {
-            "to": phone,
-            "name": name,
-            "type": "client_confirmation",
-        }
-        return {"success": True, "sid": msg.sid, "to": phone}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    r = _wa_send(phone, body)
+    if r["success"]:
+        return {"success": True, "message_id": r["message_id"], "to": phone}
+    else:
+        return {"success": False, "reason": r["error"], "to": phone}
 
 
 # ── CSV Export Helpers ────────────────────────────────────────────────────────
@@ -535,7 +547,6 @@ def chat():
 
                 # ── Notify office team (pending approval) ─────────────────────
                 try:
-                    twilio = _client()
                     req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo')
                     req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
                     office_body = (
@@ -551,18 +562,12 @@ def chat():
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        twilio.messages.create(
-                            from_=FROM_WA,
-                            to=team_num,
-                            body=office_body,
-                            status_callback=STATUS_CALLBACK_URL
-                        )
+                        _wa_send(team_num, office_body)
                 except Exception as e:
                     print(f'Office notify error: {e}')
 
                 # ── Send working-on-it message to client (no Meet link yet) ────
                 try:
-                    twilio = _client()
                     client_body = (
                         f'Hello {name}! 👋\n\n'
                         f'Thank you for requesting a TallyPrime demo. We have received your preferred slot:\n\n'
@@ -573,12 +578,7 @@ def chat():
                         f'You will receive a confirmation message with all the details once approved.\n\n'
                         f'Questions? Call or WhatsApp us: +254 116 246 074'
                     )
-                    twilio.messages.create(
-                        from_=FROM_WA,
-                        to=f'whatsapp:{norm_phone}',
-                        body=client_body,
-                        status_callback=STATUS_CALLBACK_URL
-                    )
+                    _wa_send(norm_phone, client_body)
                 except Exception as e:
                     print(f'Client notify error: {e}')
 
@@ -605,22 +605,16 @@ def chat():
 
                 # Fire team alert via WhatsApp
                 try:
-                    twilio = _client()
                     alert = (
-                        f'\U0001f916 *Zawadi Handoff \u2014 New Lead*\n\n'
-                        f'\U0001f464 *Name:* {name}\n'
-                        f'\U0001f4de *Phone:* {phone}\n'
-                        f'\U0001f4bc *Interest:* {interest}\n\n'
-                        f'Reply quickly \u2014 leads convert best within 5 minutes! \u26a1\n'
-                        f'\U0001f449 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
+                        f'🤖 *Zawadi Handoff — New Lead*\n\n'
+                        f'👤 *Name:* {name}\n'
+                        f'📞 *Phone:* {phone}\n'
+                        f'💼 *Interest:* {interest}\n\n'
+                        f'Reply quickly — leads convert best within 5 minutes! ⚡\n'
+                        f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        twilio.messages.create(
-                            from_=FROM_WA,
-                            to=team_num,
-                            body=alert,
-                            status_callback=STATUS_CALLBACK_URL
-                        )
+                        _wa_send(team_num, alert)
                 except Exception:
                     pass
 
@@ -651,49 +645,52 @@ def chat():
     return jsonify({'reply': reply, 'handoff': False})
 
 
-@app.route("/webhook/twilio-status", methods=["POST"])
-def twilio_status_webhook():
+@app.route("/webhook/meta-status", methods=["GET", "POST"])
+def meta_status_webhook():
     """
-    Receives Twilio delivery status callbacks.
+    Meta WhatsApp Cloud API webhook.
+    GET  — used by Meta to verify the webhook endpoint during setup.
+    POST — receives delivery status updates and incoming message events.
     Sends a WhatsApp alert to the team if a client message fails to deliver.
     """
-    sid        = request.form.get("MessageSid", "")
-    status     = request.form.get("MessageStatus", "")
-    to_number  = request.form.get("To", "").replace("whatsapp:", "")
+    # ── Webhook verification (GET) ───────────────────────────────────────────
+    if request.method == "GET":
+        verify_token = os.environ.get("META_WA_VERIFY_TOKEN", "optimum_prime_verify")
+        mode      = request.args.get("hub.mode")
+        token     = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == verify_token:
+            return challenge, 200
+        return "Forbidden", 403
 
-    # Only alert on terminal failure statuses
-    FAILED_STATUSES = {"failed", "undelivered"}
-    if status in FAILED_STATUSES:
-        info = _pending_messages.get(sid, {})
-        name = info.get("name", "Unknown")
-        msg_type = info.get("type", "message")
+    # ── Status / message events (POST) ────────────────────────────────────────
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                # Delivery status updates
+                for status_obj in value.get("statuses", []):
+                    status    = status_obj.get("status", "")
+                    to_number = status_obj.get("recipient_id", "")
+                    msg_id    = status_obj.get("id", "")
+                    if status in {"failed", "undelivered"}:
+                        errors = status_obj.get("errors", [{}])
+                        err_msg = errors[0].get("message", "Unknown error") if errors else "Unknown error"
+                        alert_body = (
+                            f"⚠️ *WhatsApp Delivery Failed*\n\n"
+                            f"📵 *Status:* {status.upper()}\n"
+                            f"📞 *To:* +{to_number}\n"
+                            f"🔑 *Message ID:* {msg_id}\n"
+                            f"💬 *Error:* {err_msg}\n\n"
+                            f"Check the admin panel for details."
+                        )
+                        for team_num in TEAM_NUMBERS:
+                            _wa_send(team_num, alert_body)
+    except Exception as e:
+        print(f"[Meta webhook] Error processing event: {e}")
 
-        alert_body = (
-            f"⚠️ *WhatsApp Delivery Failed*\n\n"
-            f"📵 *Status:* {status.upper()}\n"
-            f"📞 *To:* {to_number}\n"
-            f"👤 *Name:* {name}\n"
-            f"📦 *Message type:* {msg_type}\n"
-            f"🔑 *SID:* {sid}\n\n"
-            f"The recipient may not be opted in to the WhatsApp sandbox.\n"
-            f"Ask them to send `join <keyword>` to +1 415 523 8886 on WhatsApp, then resend."
-        )
-
-        client = _client()
-        for team_num in TEAM_NUMBERS:
-            try:
-                client.messages.create(from_=FROM_WA, to=team_num, body=alert_body)
-            except Exception:
-                pass
-
-        # Clean up tracking
-        _pending_messages.pop(sid, None)
-
-    elif status in {"delivered", "read"}:
-        # Clean up on success
-        _pending_messages.pop(sid, None)
-
-    return "", 204
+    return "", 200
 
 @app.route("/new-lead", methods=["POST"])
 def new_lead():
@@ -730,14 +727,10 @@ def new_review():
         f"👉 Approve or reject at: https://www.optimumprimesolutions.co.ke/admin"
     )
 
-    client = _client()
     results = []
     for to in TEAM_NUMBERS:
-        try:
-            msg = client.messages.create(from_=FROM_WA, to=to, body=body)
-            results.append({"to": to, "sid": msg.sid, "success": True})
-        except Exception as e:
-            results.append({"to": to, "error": str(e), "success": False})
+        r = _wa_send(to, body)
+        results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     return jsonify({
         "notified": sum(1 for r in results if r.get("success")),
@@ -813,16 +806,12 @@ def book_demo():
         f"https://www.optimumprimesolutions.co.ke/admin"
     )
 
-    twilio_client = _client()
     results = {"office": [], "team": [], "client": None}
 
     # Send to both office numbers
     for to in TEAM_NUMBERS:
-        try:
-            msg = twilio_client.messages.create(from_=FROM_WA, to=to, body=office_body)
-            results["office"].append({"to": to, "sid": msg.sid, "success": True})
-        except Exception as e:
-            results["office"].append({"to": to, "error": str(e), "success": False})
+        r = _wa_send(to, office_body)
+        results["office"].append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     # ── Team member notification ─────────────────────────────────────────────
     def send_team_notification(name: str, phone: str):
@@ -854,11 +843,8 @@ def book_demo():
             team_body += f"\n📝 *Notes:* {demo_notes}\n"
         team_body += "\n_Please confirm with the client 24 hours before the demo._"
 
-        try:
-            msg = twilio_client.messages.create(from_=FROM_WA, to=f"whatsapp:{norm_phone}", body=team_body)
-            results["team"].append({"to": norm_phone, "sid": msg.sid, "success": True})
-        except Exception as e:
-            results["team"].append({"to": norm_phone, "error": str(e), "success": False})
+        r = _wa_send(norm_phone, team_body)
+        results["team"].append({"to": norm_phone, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     send_team_notification(team_name, team_phone)
     if team2_name and team2_phone:
@@ -915,16 +901,8 @@ def book_demo():
             f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
         )
 
-        try:
-            msg = twilio_client.messages.create(
-                from_=FROM_WA,
-                to=f"whatsapp:{norm_client}",
-                body=client_body,
-                status_callback=STATUS_CALLBACK_URL,
-            )
-            results["client"] = {"to": norm_client, "sid": msg.sid, "success": True}
-        except Exception as e:
-            results["client"] = {"to": norm_client, "error": str(e), "success": False}
+        r = _wa_send(norm_client, client_body)
+        results["client"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
     # ── Save booking to Firebase ─────────────────────────────────────────────
     try:
@@ -1031,7 +1009,6 @@ def send_reminders():
     # Merge both sources
     all_leads = {**leads_data, **site_leads}
 
-    twilio_client = _client()
     sent_count = 0
     skipped_count = 0
     results = []
@@ -1107,11 +1084,8 @@ def send_reminders():
                 f"\n✅ Please confirm the client is ready and join on time.\n"
                 f"👉 *Admin panel:* https://www.optimumprimesolutions.co.ke/admin"
             )
-            try:
-                msg = twilio_client.messages.create(from_=FROM_WA, to=f"whatsapp:{norm}", body=body)
-                reminder_results["team"].append({"to": norm, "sid": msg.sid, "success": True})
-            except Exception as e:
-                reminder_results["team"].append({"to": norm, "error": str(e), "success": False})
+            r = _wa_send(norm, body)
+            reminder_results["team"].append({"to": norm, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
         send_team_reminder(team_name, team_phone)
         # Extra team members
@@ -1142,16 +1116,8 @@ def send_reminders():
                 f"*+254 116 246 074* if you need to reschedule.\n\n"
                 f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
             )
-            try:
-                msg = twilio_client.messages.create(
-                    from_=FROM_WA,
-                    to=f"whatsapp:{norm_client}",
-                    body=client_body,
-                    status_callback=STATUS_CALLBACK_URL,
-                )
-                reminder_results["client_msg"] = {"to": norm_client, "sid": msg.sid, "success": True}
-            except Exception as e:
-                reminder_results["client_msg"] = {"to": norm_client, "error": str(e), "success": False}
+            r = _wa_send(norm_client, client_body)
+            reminder_results["client_msg"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
         # ── Mark reminderSent in Firebase ─────────────────────────────────────
         try:
