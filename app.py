@@ -351,7 +351,6 @@ ABOUT OPTIMUM PRIME SOLUTIONS:
 - Phone: +254 116 246 074
 - Website: www.optimumprimesolutions.co.ke
 - Location: Nairobi, Kenya
-- Free webinar: TallyPrime 7.1 — Wednesday 15th July 2026, 3PM–4PM EAT (online)
 
 TALLYPRIME EDITIONS (Kenya pricing in KES):
 - Silver: Single user, ideal for small businesses. Handles invoicing, VAT, KRA eTIMS compliance.
@@ -428,13 +427,17 @@ When the user wants to speak to a person, get a quote, or be called back:
 If the user declines to provide their number, respond:
 "No problem! You can reach us anytime on WhatsApp at +254 116 246 074 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
 
+UPCOMING EVENTS (only mention if the user explicitly asks about events, webinars, or training):
+- Free webinar: TallyPrime 7.1 — Wednesday 15th July 2026, 3PM–4PM EAT (online)
+- Do NOT proactively mention this webinar unless the user asks about events, webinars, or upcoming training.
+
 CONVERSATION STYLE:
 - Warm, professional, and concise. Use simple English suitable for Kenyan business owners.
 - Ask one question at a time to understand the user's business before recommending.
 - Use bullet points or short paragraphs — avoid walls of text.
 - Use bold for product names and key terms.
 - Never make up prices — say "contact us for current pricing" if unsure.
-- Always end with a clear next step (book demo, register for webinar, or chat on WhatsApp).
+- Always end with a clear next step (book a demo or chat on WhatsApp). Only suggest the webinar if the user has asked about events or training.
 - If the user greets you, greet back warmly and ask their name.
 - If you know their name, use it naturally in conversation.
 """
@@ -445,8 +448,12 @@ def get_zawadi_reply(messages: list) -> str:
         from google import genai
         gemini_key = os.environ.get("GEMINI_API_KEY", "")
         client = genai.Client(api_key=gemini_key)
+        # Inject today's date dynamically so the AI always knows the correct year/date
+        now_eat = datetime.now(timezone(timedelta(hours=3)))
+        today_str = now_eat.strftime("%A, %d %B %Y")
+        dynamic_prompt = ZAWADI_SYSTEM_PROMPT + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). Always use this when calculating dates, days of the week, or referring to upcoming events. Never assume the year is 2024."
         # Build full message list with system prompt prepended as first user/model exchange
-        contents = [{"role": "user", "parts": [{"text": "System: " + ZAWADI_SYSTEM_PROMPT + "\n\nUser: " + (messages[0]["content"] if messages else "Hello")}]}
+        contents = [{"role": "user", "parts": [{"text": "System: " + dynamic_prompt + "\n\nUser: " + (messages[0]["content"] if messages else "Hello")}]}
                     ] if messages else []
         # If more than one message, build proper history
         if len(messages) > 1:
@@ -455,7 +462,7 @@ def get_zawadi_reply(messages: list) -> str:
                 role = "user" if msg["role"] == "user" else "model"
                 text = msg["content"]
                 if i == 0 and role == "user":
-                    text = "System: " + ZAWADI_SYSTEM_PROMPT + "\n\nUser: " + text
+                    text = "System: " + dynamic_prompt + "\n\nUser: " + text
                 contents.append({"role": role, "parts": [{"text": text}]})
         response = client.models.generate_content(
             model="gemini-2.5-flash",
