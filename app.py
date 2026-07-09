@@ -232,7 +232,7 @@ def reply_to_lead(lead: dict) -> dict:
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
             f"Or reach us directly:\n"
             f"📞 *+254 116 246 074*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
+            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · Biz Analyst_"
         )
 
     client = _client()
@@ -333,7 +333,7 @@ Your role is to help business owners and managers in Kenya discover the right so
 
 ABOUT OPTIMUM PRIME SOLUTIONS:
 - Kenya's certified TallyPrime partner
-- Services: TallyPrime accounting software, Cloud Hosting, EOS® Business Consulting, HubSpot CRM, Biz Analyst
+- Services: TallyPrime accounting software, Cloud Hosting, EOS® Business Consulting, Biz Analyst
 - Phone: +254 116 246 074
 - Website: www.optimumprimesolutions.co.ke
 - Location: Nairobi, Kenya
@@ -358,11 +358,6 @@ EOS® (ENTREPRENEURIAL OPERATING SYSTEM):
 - Tools include: Level 10 Meetings, Scorecards, Rocks (quarterly priorities), People Analyser.
 - Ideal for SMEs with 10–250 employees that want structured, accountable growth.
 - Optimum Prime Solutions is a certified EOS Implementer.
-
-HUBSPOT CRM:
-- Customer relationship management platform.
-- Helps businesses track leads, manage sales pipelines, and automate follow-ups.
-- Integrates with TallyPrime for a complete business management stack.
 
 BIZ ANALYST:
 - Mobile business analytics app that connects to TallyPrime.
@@ -917,7 +912,7 @@ def book_demo():
             f"Any questions? Reach us anytime:\n"
             f"📞 *+254 116 246 074*\n"
             f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
+            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
         )
 
         try:
@@ -1145,7 +1140,7 @@ def send_reminders():
             client_body += (
                 f"\nReply *CONFIRM* to confirm you\'ll attend, or call us at "
                 f"*+254 116 246 074* if you need to reschedule.\n\n"
-                f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM_"
+                f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
             )
             try:
                 msg = twilio_client.messages.create(
