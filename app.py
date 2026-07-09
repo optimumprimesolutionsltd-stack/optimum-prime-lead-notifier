@@ -443,31 +443,65 @@ CONVERSATION STYLE:
 """
 
 def get_zawadi_reply(messages: list) -> str:
-    """Call Google Gemini 2.5 Flash with the Zawadi system prompt."""
+    """
+    Call Google Gemini 2.5 Flash with the Zawadi system prompt.
+
+    The system prompt is passed via `system_instruction` (the correct Gemini API
+    field) so it is always active regardless of conversation length.
+
+    Conversation history is rebuilt as a strictly alternating user/model sequence
+    — the Gemini API rejects histories where two consecutive turns share the same
+    role, which was causing Gemini to lose context and re-ask answered questions.
+    """
     try:
         from google import genai
+        from google.genai import types as genai_types
         gemini_key = os.environ.get("GEMINI_API_KEY", "")
         client = genai.Client(api_key=gemini_key)
-        # Inject today's date dynamically so the AI always knows the correct year/date
+
+        # Inject today's date so the AI always knows the correct year/date
         now_eat = datetime.now(timezone(timedelta(hours=3)))
         today_str = now_eat.strftime("%A, %d %B %Y")
-        dynamic_prompt = ZAWADI_SYSTEM_PROMPT + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). Always use this when calculating dates, days of the week, or referring to upcoming events. Never assume the year is 2024."
-        # Build full message list with system prompt prepended as first user/model exchange
-        contents = [{"role": "user", "parts": [{"text": "System: " + dynamic_prompt + "\n\nUser: " + (messages[0]["content"] if messages else "Hello")}]}
-                    ] if messages else []
-        # If more than one message, build proper history
-        if len(messages) > 1:
-            contents = []
-            for i, msg in enumerate(messages):
-                role = "user" if msg["role"] == "user" else "model"
-                text = msg["content"]
-                if i == 0 and role == "user":
-                    text = "System: " + dynamic_prompt + "\n\nUser: " + text
-                contents.append({"role": role, "parts": [{"text": text}]})
+        dynamic_prompt = (
+            ZAWADI_SYSTEM_PROMPT
+            + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). "
+            "Always use this when calculating dates, days of the week, or referring "
+            "to upcoming events. Never assume the year is 2024."
+        )
+
+        # ── Build a strictly alternating user/model history ───────────────────
+        # The frontend sends roles as 'user' or 'assistant'; Gemini expects 'user'/'model'.
+        # We merge any consecutive same-role turns into one to satisfy the API.
+        raw: list[dict] = []
+        for msg in messages:
+            role = "user" if msg.get("role") == "user" else "model"
+            text = (msg.get("content") or "").strip()
+            if not text:
+                continue
+            if raw and raw[-1]["role"] == role:
+                # Merge consecutive same-role turns (avoids API rejection)
+                raw[-1]["text"] += "\n" + text
+            else:
+                raw.append({"role": role, "text": text})
+
+        # Convert to Gemini contents format
+        contents = [
+            {"role": turn["role"], "parts": [{"text": turn["text"]}]}
+            for turn in raw
+        ]
+
+        # Gemini requires the last turn to be from the user
+        if not contents or contents[-1]["role"] != "user":
+            contents.append({"role": "user", "parts": [{"text": "Hello"}]})
+
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=contents,
-            config={"max_output_tokens": 1500, "temperature": 0.7}
+            config=genai_types.GenerateContentConfig(
+                system_instruction=dynamic_prompt,
+                max_output_tokens=1500,
+                temperature=0.7,
+            ),
         )
         return response.text.strip()
     except Exception as e:
