@@ -28,6 +28,8 @@ FIREBASE_WEBINAR_URL = f"{FIREBASE_BASE}/webinar_registrants.json"
 FIREBASE_LEADS_URL   = f"{FIREBASE_BASE}/leads.json"
 
 # Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
+# Messages are SENT FROM +254727209720 (the registered API number)
+# Notifications are DELIVERED TO these numbers
 TEAM_NUMBERS = [
     "+254758449475",
     "+254116246074",
