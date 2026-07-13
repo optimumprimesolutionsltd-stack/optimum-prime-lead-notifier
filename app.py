@@ -880,6 +880,7 @@ def newsletter_subscribe():
         "success": True,
         "email": email,
         "email_sent": email_result.get("success", False),
+        "email_error": email_result.get("error", ""),
         "notified": sum(1 for r in results if r.get("success")),
         "details": results
     })
