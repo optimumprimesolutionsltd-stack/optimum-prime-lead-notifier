@@ -23,9 +23,10 @@ META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "")
 META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "")
 META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
 
-FIREBASE_BASE        = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
-FIREBASE_WEBINAR_URL = f"{FIREBASE_BASE}/webinar_registrants.json"
-FIREBASE_LEADS_URL   = f"{FIREBASE_BASE}/leads.json"
+FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
+FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
+FIREBASE_LEADS_URL     = f"{FIREBASE_BASE}/leads.json"
+FIREBASE_NEWSLETTER_URL = f"{FIREBASE_BASE}/newsletter_subscribers.json"
 
 # Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
 # Messages are SENT FROM +254727209720 (the registered API number)
@@ -780,6 +781,50 @@ def new_review():
         "details": results
     })
 
+
+
+@app.route("/newsletter-subscribe", methods=["POST"])
+def newsletter_subscribe():
+    """Save newsletter subscriber and notify team on WhatsApp."""
+    data = request.get_json(force=True, silent=True) or {}
+    email = data.get("email", "").strip()
+
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+
+    # ── Save to Firebase newsletter collection ────────────────────────────────
+    try:
+        subscriber_record = {
+            "email": email,
+            "subscribedAt": datetime.now(timezone.utc).isoformat(),
+            "status": "active"
+        }
+        requests.post(FIREBASE_NEWSLETTER_URL, json=subscriber_record, timeout=5)
+    except Exception as e:
+        print(f"Firebase newsletter save error: {e}")
+
+    # ── Notify team on WhatsApp ──────────────────────────────────────────────
+    try:
+        body = (
+            f"📧 *New Newsletter Subscriber — Optimum Prime Solutions*\n\n"
+            f"📨 *Email:* {email}\n"
+            f"⏰ *Subscribed:* {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+            f"👉 Manage subscribers at: https://www.optimumprimesolutions.co.ke/admin"
+        )
+        results = []
+        for to in TEAM_NUMBERS:
+            r = _wa_send(to, body)
+            results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
+    except Exception as e:
+        print(f"Newsletter notification error: {e}")
+        results = []
+
+    return jsonify({
+        "success": True,
+        "email": email,
+        "notified": sum(1 for r in results if r.get("success")),
+        "details": results
+    })
 
 @app.route("/book-demo", methods=["POST"])
 def book_demo():
