@@ -36,6 +36,7 @@ FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-wes
 FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
 FIREBASE_LEADS_URL     = f"{FIREBASE_BASE}/leads.json"
 FIREBASE_NEWSLETTER_URL = f"{FIREBASE_BASE}/newsletter_subscribers.json"
+FIREBASE_WA_CONVOS_BASE = f"{FIREBASE_BASE}/whatsapp_conversations"
 
 # Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
 # Messages are SENT FROM +254727209720 (the registered API number)
@@ -51,7 +52,7 @@ app = Flask(__name__)
 CORS(app)
 
 
-def _wa_send(to: str, body: str) -> dict:
+def _wa_send(to: str, body: str, name: str = "") -> dict:
     """
     Send a WhatsApp text message via Meta Cloud API.
     `to` should be E.164 format, e.g. '+254712345678'.
@@ -73,7 +74,9 @@ def _wa_send(to: str, body: str) -> dict:
         resp = requests.post(META_WA_API_URL, json=payload, headers=headers, timeout=10)
         data = resp.json()
         if resp.status_code == 200 and "messages" in data:
-            return {"success": True, "message_id": data["messages"][0].get("id", ""), "error": ""}
+            msg_id = data["messages"][0].get("id", "")
+            _log_wa_message(to_clean, "out", body, name=name, message_id=msg_id)
+            return {"success": True, "message_id": msg_id, "error": ""}
         else:
             err = data.get("error", {}).get("message", str(data))
             print(f"[Meta WA] Send failed to {to}: {err}")
@@ -81,6 +84,36 @@ def _wa_send(to: str, body: str) -> dict:
     except Exception as e:
         print(f"[Meta WA] Exception sending to {to}: {e}")
         return {"success": False, "message_id": "", "error": str(e)}
+
+
+def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = "", message_id: str = "") -> None:
+    """
+    Append a message to a customer's WhatsApp conversation thread in Firebase,
+    so the admin panel can show chat history. Team-alert numbers are excluded
+    so the conversation list only shows real customer threads.
+    """
+    if phone_digits in {n.lstrip("+") for n in TEAM_NUMBERS}:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        requests.post(f"{FIREBASE_WA_CONVOS_BASE}/{phone_digits}/messages.json", json={
+            "direction": direction,
+            "text": text,
+            "timestamp": now,
+            "messageId": message_id,
+        }, timeout=5)
+        meta = {
+            "phone": f"+{phone_digits}",
+            "lastMessage": text,
+            "lastMessageAt": now,
+            "lastDirection": direction,
+            "unread": direction == "in",
+        }
+        if name:
+            meta["name"] = name
+        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{phone_digits}/meta.json", json=meta, timeout=5)
+    except Exception as e:
+        print(f"[WA conversation log] error: {e}")
 
 
 def _send_email(to: str, subject: str, html: str) -> dict:
@@ -768,10 +801,67 @@ def meta_status_webhook():
                         )
                         for team_num in TEAM_NUMBERS:
                             _wa_send(team_num, alert_body)
+
+                # Incoming customer messages
+                contacts = value.get("contacts", [])
+                contact_name = contacts[0].get("profile", {}).get("name", "") if contacts else ""
+                for msg in value.get("messages", []):
+                    from_number = msg.get("from", "")
+                    msg_id      = msg.get("id", "")
+                    msg_type    = msg.get("type", "text")
+                    if not from_number:
+                        continue
+                    text = msg.get("text", {}).get("body", "") if msg_type == "text" else f"[{msg_type} message]"
+
+                    _log_wa_message(from_number, "in", text, name=contact_name, message_id=msg_id)
+
+                    # Alert the team so a human can take over the conversation
+                    alert = (
+                        f"💬 *New WhatsApp Message*\n\n"
+                        f"👤 *From:* {contact_name or 'Unknown'}\n"
+                        f"📞 *Phone:* +{from_number}\n"
+                        f"📝 *Message:* {text}\n\n"
+                        f"Reply from the admin panel's WhatsApp tab or directly on WhatsApp."
+                    )
+                    for team_num in TEAM_NUMBERS:
+                        _wa_send(team_num, alert)
+
+                    # Auto-reply with a greeting only the first time this number gets in touch —
+                    # afterwards a human takes over, so we don't keep bot-replying mid-conversation.
+                    try:
+                        existing = requests.get(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta/greeted.json", timeout=5).json()
+                    except Exception:
+                        existing = None
+                    if not existing:
+                        greeting = (
+                            f"Hello {contact_name or 'there'}! 👋\n\n"
+                            f"Thanks for messaging *Optimum Prime Solutions* — Kenya's Certified TallyPrime Partner.\n\n"
+                            f"A member of our team will get back to you shortly. In the meantime:\n"
+                            f"📞 *+254 116 246 074*\n"
+                            f"🌐 *www.optimumprimesolutions.co.ke*"
+                        )
+                        _wa_send(from_number, greeting)
+                        try:
+                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"greeted": True}, timeout=5)
+                        except Exception:
+                            pass
     except Exception as e:
         print(f"[Meta webhook] Error processing event: {e}")
 
     return "", 200
+
+
+@app.route("/whatsapp/reply", methods=["POST"])
+def whatsapp_reply():
+    """Send a manual WhatsApp reply from the admin panel's WhatsApp tab."""
+    data = request.get_json(force=True, silent=True) or {}
+    phone   = (data.get("phone") or "").strip()
+    message = (data.get("message") or "").strip()
+    if not phone or not message:
+        return jsonify({"success": False, "error": "phone and message are required"}), 400
+
+    result = _wa_send(normalize_phone(phone), message)
+    return jsonify(result)
 
 @app.route("/new-lead", methods=["POST"])
 def new_lead():
