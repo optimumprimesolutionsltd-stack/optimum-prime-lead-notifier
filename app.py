@@ -23,6 +23,15 @@ META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "")
 META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "")
 META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
 
+# ── Resend email config ───────────────────────────────────────────────────────
+# Set in Render environment variables:
+#   RESEND_API_KEY   — API key from resend.com/api-keys
+#   RESEND_FROM      — verified sender, e.g. "Optimum Prime Solutions <newsletter@optimumprimesolutions.co.ke>"
+#                      (falls back to Resend's test sender if you haven't verified a domain yet)
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM    = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <onboarding@resend.dev>")
+RESEND_API_URL = "https://api.resend.com/emails"
+
 FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
 FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
 FIREBASE_LEADS_URL     = f"{FIREBASE_BASE}/leads.json"
@@ -72,6 +81,34 @@ def _wa_send(to: str, body: str) -> dict:
     except Exception as e:
         print(f"[Meta WA] Exception sending to {to}: {e}")
         return {"success": False, "message_id": "", "error": str(e)}
+
+
+def _send_email(to: str, subject: str, html: str) -> dict:
+    """
+    Send a transactional email via Resend.
+    Returns a dict with keys: success (bool), id (str), error (str).
+    """
+    if not RESEND_API_KEY:
+        print("[Resend] RESEND_API_KEY not set — skipping email send")
+        return {"success": False, "id": "", "error": "RESEND_API_KEY not configured"}
+
+    payload = {"from": RESEND_FROM, "to": [to], "subject": subject, "html": html}
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(RESEND_API_URL, json=payload, headers=headers, timeout=10)
+        data = resp.json()
+        if resp.status_code in (200, 201) and data.get("id"):
+            return {"success": True, "id": data["id"], "error": ""}
+        else:
+            err = data.get("message", str(data))
+            print(f"[Resend] Send failed to {to}: {err}")
+            return {"success": False, "id": "", "error": err}
+    except Exception as e:
+        print(f"[Resend] Exception sending to {to}: {e}")
+        return {"success": False, "id": "", "error": str(e)}
 
 
 # ── Google Meet Link Generator ───────────────────────────────────────────────
@@ -785,7 +822,7 @@ def new_review():
 
 @app.route("/newsletter-subscribe", methods=["POST"])
 def newsletter_subscribe():
-    """Save newsletter subscriber and notify team on WhatsApp."""
+    """Save newsletter subscriber, email them a welcome message, and notify team on WhatsApp."""
     data = request.get_json(force=True, silent=True) or {}
     email = data.get("email", "").strip()
 
@@ -802,6 +839,26 @@ def newsletter_subscribe():
         requests.post(FIREBASE_NEWSLETTER_URL, json=subscriber_record, timeout=5)
     except Exception as e:
         print(f"Firebase newsletter save error: {e}")
+
+    # ── Send congratulatory email to the subscriber ───────────────────────────
+    email_html = f"""
+    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+      <h1 style="color: #C0392B; font-size: 22px;">You're on the list! 🎉</h1>
+      <p style="font-size: 15px; line-height: 1.6;">
+        Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips,
+        cloud hosting guides, and EOS&reg; business insights straight to your inbox.
+      </p>
+      <p style="font-size: 15px; line-height: 1.6;">
+        In the meantime, feel free to explore
+        <a href="https://www.optimumprimesolutions.co.ke" style="color: #C0392B;">our site</a>
+        or <a href="https://www.optimumprimesolutions.co.ke/contact#demo-form" style="color: #C0392B;">book a free demo</a>.
+      </p>
+      <p style="font-size: 13px; color: #888; margin-top: 32px;">
+        Optimum Prime Solutions &middot; Ruiru, Kenya &middot; +254 116 246 074
+      </p>
+    </div>
+    """
+    email_result = _send_email(email, "You're subscribed — Optimum Prime Solutions", email_html)
 
     # ── Notify team on WhatsApp ──────────────────────────────────────────────
     try:
@@ -822,6 +879,7 @@ def newsletter_subscribe():
     return jsonify({
         "success": True,
         "email": email,
+        "email_sent": email_result.get("success", False),
         "notified": sum(1 for r in results if r.get("success")),
         "details": results
     })
