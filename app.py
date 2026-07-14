@@ -19,8 +19,8 @@ from openai import OpenAI
 # Set these in Render environment variables:
 #   META_WA_TOKEN        — permanent system user access token from Meta Business Manager
 #   META_WA_PHONE_ID     — Phone Number ID from WhatsApp Manager (not the phone number itself)
-META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "")
-META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "")
+META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "").strip()
+META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "").strip()
 META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
 
 # ── Resend email config ───────────────────────────────────────────────────────
@@ -28,8 +28,10 @@ META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/message
 #   RESEND_API_KEY   — API key from resend.com/api-keys
 #   RESEND_FROM      — verified sender, e.g. "Optimum Prime Solutions <newsletter@optimumprimesolutions.co.ke>"
 #                      (falls back to Resend's test sender if you haven't verified a domain yet)
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-RESEND_FROM    = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <onboarding@resend.dev>")
+# .strip() guards against a trailing newline/whitespace sneaking in via copy-paste
+# into Render's env var UI, which breaks the Authorization header otherwise.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM    = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <onboarding@resend.dev>").strip()
 RESEND_API_URL = "https://api.resend.com/emails"
 
 FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
