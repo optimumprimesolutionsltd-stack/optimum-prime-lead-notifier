@@ -4,6 +4,8 @@ Optimum Prime Solutions — Lead Auto-Reply & Webinar Notification System
 """
 
 import os
+import re
+import html
 import csv
 import io
 import uuid
@@ -25,14 +27,18 @@ META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/message
 
 # ── Resend email config ───────────────────────────────────────────────────────
 # Set in Render environment variables:
-#   RESEND_API_KEY   — API key from resend.com/api-keys
-#   RESEND_FROM      — verified sender, e.g. "Optimum Prime Solutions <newsletter@optimumprimesolutions.co.ke>"
-#                      (falls back to Resend's test sender if you haven't verified a domain yet)
+#   RESEND_API_KEY       — API key from resend.com/api-keys
+#   RESEND_FROM          — verified sender, e.g. "Optimum Prime Solutions <zawadi@mail.optimumprimesolutions.co.ke>"
+#                          (falls back to Resend's test sender if you haven't verified a domain yet)
+#   RESEND_WEBHOOK_SECRET — signing secret shown when you create the inbound webhook in the
+#                          Resend dashboard (Webhooks → Add Webhook → select "email.received").
+#                          Used to verify inbound requests are really from Resend.
 # .strip() guards against a trailing newline/whitespace sneaking in via copy-paste
 # into Render's env var UI, which breaks the Authorization header otherwise.
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
-RESEND_FROM    = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <onboarding@resend.dev>").strip()
-RESEND_API_URL = "https://api.resend.com/emails"
+RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM           = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <onboarding@resend.dev>").strip()
+RESEND_WEBHOOK_SECRET = os.environ.get("RESEND_WEBHOOK_SECRET", "").strip()
+RESEND_API_URL        = "https://api.resend.com/emails"
 
 FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
 FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
@@ -186,6 +192,35 @@ def _send_email(to: str, subject: str, html: str) -> dict:
     except Exception as e:
         print(f"[Resend] Exception sending to {to}: {e}")
         return {"success": False, "id": "", "error": str(e)}
+
+
+def _verify_resend_webhook(payload: bytes, headers: dict) -> bool:
+    """
+    Verify an inbound Resend webhook request using its Svix signing secret.
+    Returns False (reject) if verification fails or the secret isn't configured.
+    """
+    if not RESEND_WEBHOOK_SECRET:
+        print("[Resend webhook] RESEND_WEBHOOK_SECRET not set — rejecting inbound webhook")
+        return False
+    try:
+        from svix.webhooks import Webhook, WebhookVerificationError
+        wh = Webhook(RESEND_WEBHOOK_SECRET)
+        wh.verify(payload, headers)
+        return True
+    except WebhookVerificationError as e:
+        print(f"[Resend webhook] Signature verification failed: {e}")
+        return False
+    except Exception as e:
+        print(f"[Resend webhook] Verification error: {e}")
+        return False
+
+
+def _resend_get_received_email(email_id: str) -> dict:
+    """Fetch the full body of a received email (webhooks only carry metadata)."""
+    headers = {"Authorization": f"Bearer {RESEND_API_KEY}"}
+    resp = requests.get(f"https://api.resend.com/emails/receiving/{email_id}", headers=headers, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ── Google Meet Link Generator ───────────────────────────────────────────────
@@ -515,6 +550,12 @@ When the user wants to speak to a person, get a quote, or be called back:
 If the user declines to provide their number, respond:
 "No problem! You can reach us anytime on WhatsApp at +254 116 246 074 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
 
+PROACTIVE ESCALATION (different from the handoff above — this is YOUR call, not the user's request):
+Sometimes you should hand off even though the user never asked for a person — for example: they've asked essentially the same question 2+ times without a satisfying answer, they express frustration ("this isn't helping", "you don't understand", "forget it", "never mind"), their question is genuinely outside TallyPrime / Cloud Hosting / EOS® / Biz Analyst and you cannot help, or the conversation is clearly going in circles.
+When that happens, respond with ONLY this exact JSON (no other text before or after):
+{"escalate": true, "reason": "<brief description, e.g. 'user frustrated after repeated pricing questions'>"}
+Do NOT use this for questions you CAN answer — only when you genuinely cannot help further. This is rare; most conversations should not trigger it.
+
 UPCOMING EVENTS (only mention if the user explicitly asks about events, webinars, or training):
 - Free webinar: TallyPrime 7.1 — Wednesday 15th July 2026, 3PM–4PM EAT (online)
 - Do NOT proactively mention this webinar unless the user asks about events, webinars, or upcoming training.
@@ -597,12 +638,17 @@ def get_zawadi_reply(messages: list) -> str:
         return "I'm having a little trouble connecting right now. Please reach us directly on WhatsApp at +254 116 246 074 or visit www.optimumprimesolutions.co.ke"
 
 
-def process_zawadi_reply(reply: str) -> dict:
+def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") -> dict:
     """
-    Detect whether Zawadi's reply is a booking/handoff JSON payload and, if so,
-    run the same side effects (Firebase save, team alert, client confirmation)
-    regardless of which channel (website widget or WhatsApp) triggered it.
-    Always returns a dict with a 'reply' key holding text safe to show/send back.
+    Detect whether Zawadi's reply is a booking/handoff/escalate JSON payload and,
+    if so, run the same side effects (Firebase save, team alert, client
+    confirmation) regardless of which channel (website widget or WhatsApp)
+    triggered it. Always returns a dict with a 'reply' key holding text safe to
+    show/send back.
+
+    `from_phone`/`from_name` are the known WhatsApp sender identity (unavailable
+    for the website widget) — used for the `escalate` signal, which doesn't ask
+    Zawadi to collect contact details since WhatsApp already provides them.
     """
     import json as _json
 
@@ -614,7 +660,7 @@ def process_zawadi_reply(reply: str) -> dict:
                 clean = clean[4:]
         clean = clean.strip().lstrip('`').rstrip('`').strip()
 
-        if clean.startswith('{') and ('"booking"' in clean or '"handoff"' in clean):
+        if clean.startswith('{') and ('"booking"' in clean or '"handoff"' in clean or '"escalate"' in clean):
             parsed = _json.loads(clean)
 
             # ── DEMO BOOKING (end-to-end) ─────────────────────────────────────
@@ -753,6 +799,33 @@ def process_zawadi_reply(reply: str) -> dict:
                     'whatsapp_url': f"https://wa.me/254727209720?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}",
                     'reply': f"Thanks {name}! 🙌 A member of our team will reach out to you shortly. Feel free to ask anything else in the meantime.",
                 }
+
+            # ── PROACTIVE ESCALATION (Zawadi's own call, not user-requested) ────
+            if parsed.get('escalate'):
+                reason = parsed.get('reason', 'Zawadi was unable to help further')
+                name   = from_name or 'Unknown'
+                phone  = from_phone or ''
+
+                try:
+                    alert = (
+                        f'🆘 *Zawadi Escalation*\n\n'
+                        f'👤 *From:* {name}\n'
+                        f'📞 *Phone:* {phone or "(not captured — website chat)"}\n'
+                        f'💬 *Why:* {reason}\n\n'
+                        f'Zawadi flagged this conversation as needing a human — please check in.\n'
+                        f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
+                    )
+                    for team_num in TEAM_NUMBERS:
+                        _wa_send(team_num, alert)
+                except Exception:
+                    pass
+
+                reply_text = (
+                    "I want to make sure you get the best help with this — let me connect you with a member of our team, they'll reach out to you shortly! 🙏"
+                    if phone else
+                    "I want to make sure you get the best help with this — please reach our team directly on WhatsApp at +254 727 209 720 or call +254 116 246 074."
+                )
+                return {'escalate': True, 'reason': reason, 'handoff': False, 'reply': reply_text}
     except Exception as e:
         print(f'Zawadi reply JSON parse error: {e}')
 
@@ -869,8 +942,21 @@ def meta_status_webhook():
                         except Exception:
                             pass
 
-                    # Only text messages get a bot reply; only while no human has taken over.
-                    if msg_type != "text" or bot_paused:
+                    # Non-text messages (images, audio, documents) — Zawadi can't read
+                    # these, so alert the team directly rather than silently skipping.
+                    if msg_type != "text":
+                        alert = (
+                            f"📎 *WhatsApp {msg_type.title()} Received*\n\n"
+                            f"👤 *From:* {contact_name or 'Unknown'}\n"
+                            f"📞 *Phone:* +{from_number}\n\n"
+                            f"Zawadi can't read {msg_type} messages — please review it directly "
+                            f"in the admin panel's WhatsApp tab or on WhatsApp."
+                        )
+                        for team_num in TEAM_NUMBERS:
+                            _wa_send(team_num, alert)
+                        continue
+
+                    if bot_paused:
                         continue
 
                     stored_messages = existing_convo.get("messages") or {}
@@ -883,12 +969,12 @@ def meta_status_webhook():
 
                     try:
                         zawadi_reply = get_zawadi_reply(gemini_messages)
-                        result = process_zawadi_reply(zawadi_reply)
+                        result = process_zawadi_reply(zawadi_reply, from_phone=f"+{from_number}", from_name=contact_name)
                         reply_text = result.get("reply") or zawadi_reply
                         _wa_send(from_number, reply_text, name=contact_name)
 
-                        # A booking or handoff means a human takes it from here.
-                        if result.get("booking") or result.get("handoff"):
+                        # A booking, handoff, or escalation means a human takes it from here.
+                        if result.get("booking") or result.get("handoff") or result.get("escalate"):
                             requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"botPaused": True}, timeout=5)
                     except Exception as e:
                         print(f"[Zawadi WhatsApp] Error generating/sending reply: {e}")
@@ -917,6 +1003,68 @@ def whatsapp_reply():
     except Exception:
         pass
     return jsonify(result)
+
+
+@app.route("/webhook/resend-inbound", methods=["POST"])
+def resend_inbound_webhook():
+    """
+    Resend inbound-email webhook (event: email.received).
+    Fetches the full message, runs it through Zawadi for a contextual reply,
+    and emails the reply back to the sender.
+    """
+    raw_body = request.get_data()
+    if not _verify_resend_webhook(raw_body, dict(request.headers)):
+        return "Invalid signature", 401
+
+    event = request.get_json(force=True, silent=True) or {}
+    if event.get("type") != "email.received":
+        return "", 200
+
+    data      = event.get("data", {})
+    email_id  = data.get("email_id", "")
+    from_addr = data.get("from", "")
+    subject   = data.get("subject") or "(no subject)"
+    if not email_id or not from_addr:
+        return "", 200
+
+    # Never auto-reply to automated senders or our own address — avoids reply loops.
+    from_lower = from_addr.lower()
+    if any(tag in from_lower for tag in ("no-reply", "noreply", "mailer-daemon", "postmaster")):
+        print(f"[Resend inbound] Skipping auto-reply to automated sender {from_addr}")
+        return "", 200
+
+    try:
+        full_email = _resend_get_received_email(email_id)
+    except Exception as e:
+        print(f"[Resend inbound] Failed to fetch email {email_id}: {e}")
+        return "", 200
+
+    body_text = full_email.get("text") or ""
+    if not body_text:
+        body_text = re.sub("<[^<]+?>", " ", full_email.get("html") or "").strip()
+    if not body_text:
+        return "", 200
+
+    try:
+        zawadi_reply = get_zawadi_reply([{"role": "user", "content": f"Subject: {subject}\n\n{body_text}"}])
+        result = process_zawadi_reply(zawadi_reply)
+        reply_text = result.get("reply") or zawadi_reply
+
+        reply_html = f"""
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+          <p style="font-size: 15px; line-height: 1.6; white-space: pre-wrap;">{html.escape(reply_text)}</p>
+          <p style="font-size: 13px; color: #888; margin-top: 32px;">
+            Optimum Prime Solutions &middot; Ruiru, Kenya &middot; +254 116 246 074
+          </p>
+        </div>
+        """
+        subject_reply = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        _send_email(from_addr, subject_reply, reply_html)
+    except Exception as e:
+        print(f"[Resend inbound] Error generating/sending reply: {e}")
+
+    return "", 200
+
 
 @app.route("/new-lead", methods=["POST"])
 def new_lead():
