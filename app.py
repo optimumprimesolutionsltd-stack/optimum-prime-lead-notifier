@@ -60,10 +60,13 @@ app = Flask(__name__)
 CORS(app)
 
 
-def _wa_send(to: str, body: str, name: str = "") -> dict:
+def _wa_send(to: str, body: str, name: str = "", force_log: bool = False) -> dict:
     """
     Send a WhatsApp text message via Meta Cloud API.
     `to` should be E.164 format, e.g. '+254712345678'.
+    `force_log` logs this message even if `to` is a team number — use this for
+    genuine bot/human replies within a real conversation (e.g. a team member
+    testing Zawadi from their own phone), not for internal alert broadcasts.
     Returns a dict with keys: success (bool), message_id (str), error (str).
     """
     # Strip leading '+' — Meta API expects digits only (no + prefix)
@@ -83,7 +86,7 @@ def _wa_send(to: str, body: str, name: str = "") -> dict:
         data = resp.json()
         if resp.status_code == 200 and "messages" in data:
             msg_id = data["messages"][0].get("id", "")
-            _log_wa_message(to_clean, "out", body, name=name, message_id=msg_id)
+            _log_wa_message(to_clean, "out", body, name=name, message_id=msg_id, force=force_log)
             return {"success": True, "message_id": msg_id, "error": ""}
         else:
             err = data.get("error", {}).get("message", str(data))
@@ -136,13 +139,16 @@ def _wa_send_template(to: str, template_name: str, params: list, language: str =
         return {"success": False, "message_id": "", "error": str(e)}
 
 
-def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = "", message_id: str = "") -> None:
+def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = "", message_id: str = "", force: bool = False) -> None:
     """
     Append a message to a customer's WhatsApp conversation thread in Firebase,
-    so the admin panel can show chat history. Team-alert numbers are excluded
-    so the conversation list only shows real customer threads.
+    so the admin panel can show chat history and Zawadi has memory. Team
+    numbers are excluded by default so internal alert broadcasts don't clutter
+    the conversation list — pass force=True for a genuine conversation
+    (inbound message or bot/human reply) even if that number is also a team
+    number, e.g. someone testing Zawadi from their own phone.
     """
-    if phone_digits in {n.lstrip("+") for n in TEAM_NUMBERS}:
+    if not force and phone_digits in {n.lstrip("+") for n in TEAM_NUMBERS}:
         return
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -923,7 +929,7 @@ def meta_status_webhook():
                     is_first_contact = not existing_meta.get("everContacted")
                     bot_paused = bool(existing_meta.get("botPaused"))
 
-                    _log_wa_message(from_number, "in", text, name=contact_name, message_id=msg_id)
+                    _log_wa_message(from_number, "in", text, name=contact_name, message_id=msg_id, force=True)
 
                     # Alert the team once per new conversation — Zawadi handles the
                     # back-and-forth from here, so we don't spam an alert per message.
@@ -971,7 +977,7 @@ def meta_status_webhook():
                         zawadi_reply = get_zawadi_reply(gemini_messages)
                         result = process_zawadi_reply(zawadi_reply, from_phone=f"+{from_number}", from_name=contact_name)
                         reply_text = result.get("reply") or zawadi_reply
-                        _wa_send(from_number, reply_text, name=contact_name)
+                        _wa_send(from_number, reply_text, name=contact_name, force_log=True)
 
                         # A booking, handoff, or escalation means a human takes it from here.
                         if result.get("booking") or result.get("handoff") or result.get("escalate"):
@@ -997,7 +1003,7 @@ def whatsapp_reply():
         return jsonify({"success": False, "error": "phone and message are required"}), 400
 
     norm_phone = normalize_phone(phone)
-    result = _wa_send(norm_phone, message)
+    result = _wa_send(norm_phone, message, force_log=True)
     try:
         requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{norm_phone.lstrip('+')}/meta.json", json={"botPaused": True}, timeout=5)
     except Exception:
