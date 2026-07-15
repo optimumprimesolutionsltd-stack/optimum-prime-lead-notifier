@@ -88,6 +88,48 @@ def _wa_send(to: str, body: str, name: str = "") -> dict:
         return {"success": False, "message_id": "", "error": str(e)}
 
 
+def _wa_send_template(to: str, template_name: str, params: list, language: str = "en_US", name: str = "") -> dict:
+    """
+    Send an approved WhatsApp message template via Meta Cloud API.
+    `params` is an ordered list of strings filling {{1}}, {{2}}, ... in the template body.
+    Required for business-initiated messages once the app is published (outside the
+    24h customer-service session window, Meta rejects free-form text).
+    """
+    to_clean = to.lstrip("+")
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_clean,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language},
+            "components": [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(p)} for p in params],
+            }],
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {META_WA_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(META_WA_API_URL, json=payload, headers=headers, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and "messages" in data:
+            msg_id = data["messages"][0].get("id", "")
+            body_preview = f"[{template_name}] " + " | ".join(str(p) for p in params)
+            _log_wa_message(to_clean, "out", body_preview, name=name, message_id=msg_id)
+            return {"success": True, "message_id": msg_id, "error": ""}
+        else:
+            err = data.get("error", {}).get("message", str(data))
+            print(f"[Meta WA] Template send failed to {to}: {err}")
+            return {"success": False, "message_id": "", "error": err}
+    except Exception as e:
+        print(f"[Meta WA] Exception sending template to {to}: {e}")
+        return {"success": False, "message_id": "", "error": str(e)}
+
+
 def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = "", message_id: str = "") -> None:
     """
     Append a message to a customer's WhatsApp conversation thread in Firebase,
@@ -242,14 +284,20 @@ def notify_team(lead: dict) -> list:
     demo_time = lead.get("demoTime", "")
 
     is_webinar = "Webinar" in interest
+    results = []
 
-    if is_webinar:
-        count = get_registration_count()
-        count_line = f"📊 *Total registrations so far:* {count}\n" if count != -1 else "📊 *Total registrations:* (unavailable)\n"
-        header = "🔔 *New Webinar Registration — Optimum Prime Solutions*"
-    else:
-        count_line = ""
-        header = "🔔 *New Demo Request — Optimum Prime Solutions*"
+    if not is_webinar:
+        # Uses the approved `new_lead_alert` template (required for business-initiated
+        # sends once the app is published — free text would be rejected outside a session)
+        for to in TEAM_NUMBERS:
+            r = _wa_send_template(to, "new_lead_alert", [name, company, phone, interest])
+            results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
+        return results
+
+    # Webinar registrations: `webinar_registration_alert` template not yet approved — free text for now
+    count = get_registration_count()
+    count_line = f"📊 *Total registrations so far:* {count}\n" if count != -1 else "📊 *Total registrations:* (unavailable)\n"
+    header = "🔔 *New Webinar Registration — Optimum Prime Solutions*"
 
     body = (
         f"{header}\n\n"
@@ -262,15 +310,6 @@ def notify_team(lead: dict) -> list:
     )
     if message:
         body += f"💬 *Message:* {message}\n"
-
-    # Add preferred demo slot — NO Meet link at this stage (sent only when demo is confirmed)
-    if not is_webinar and demo_date and demo_time:
-        display_date = format_date_display(demo_date)
-        body += (
-            f"\n📅 *Preferred slot:* {display_date}\n"
-            f"🕐 *Time:* {demo_time} (EAT)\n"
-        )
-
     if count_line:
         body += f"\n{count_line}"
 
@@ -280,7 +319,6 @@ def notify_team(lead: dict) -> list:
         f"\n_Reply quickly — leads convert best within 5 minutes!_ ⚡"
     )
 
-    results = []
     for to in TEAM_NUMBERS:
         r = _wa_send(to, body)
         results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
@@ -299,42 +337,19 @@ def reply_to_lead(lead: dict) -> dict:
     elif not phone.startswith("+"):
         phone = "+254" + phone              # 712345678 → +254712345678
 
-    name      = lead.get("name", "there")
-    company   = lead.get("company", "")
-    demo_date = lead.get("demoDate", "")
-    demo_time = lead.get("demoTime", "")
+    name     = lead.get("name", "there")
+    interest = lead.get("interest", "TallyPrime")
 
-    # Custom message (e.g. webinar confirmation) takes priority
+    # Custom message (e.g. webinar confirmation) takes priority — sent as free text since
+    # it's arbitrary per-call content, not covered by a fixed approved template
     custom_msg = lead.get("confirmation_message", "")
     if custom_msg:
-        body = custom_msg
+        r = _wa_send(phone, custom_msg)
     else:
-        cal_link = build_google_calendar_link(name, company, demo_date, demo_time)
+        # Uses the approved `lead_confirmation` template (required for business-initiated
+        # sends once the app is published — free text would be rejected outside a session)
+        r = _wa_send_template(phone, "lead_confirmation", [name, interest])
 
-        business_type    = lead.get("businessType", "")
-        current_software = lead.get("currentSoftware", "")
-
-        # ── "Working on it" message — no Meet link yet ──────────────────────
-        preferred_date_line = ""
-        if demo_date:
-            preferred_date_line = f"\n📅 *Your preferred date:* {format_date_display(demo_date)}"
-            if demo_time:
-                preferred_date_line += f"\n🕐 *Preferred time:* {demo_time} (EAT)"
-
-        body = (
-            f"Hello {name}! 👋\n\n"
-            f"Thank you for your interest in TallyPrime! 🎉\n\n"
-            f"We've received your demo request and our team is reviewing it. "
-            f"We'll confirm your demo slot and send you all the details shortly.\n"
-            f"{preferred_date_line}\n\n"
-            f"In the meantime, feel free to explore our website:\n"
-            f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-            f"Or reach us directly:\n"
-            f"📞 *+254 116 246 074*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · Biz Analyst_"
-        )
-
-    r = _wa_send(phone, body)
     if r["success"]:
         return {"success": True, "message_id": r["message_id"], "to": phone}
     else:
@@ -1101,46 +1116,18 @@ def book_demo():
         elif not norm_client.startswith("+"):
             norm_client = "+254" + norm_client
 
-        cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time)
-
-        is_reschedule = source == "reschedule"
-        intro_line = (
-            f"Your TallyPrime demo has been *rescheduled*. Here are the updated details:"
-            if is_reschedule else
-            f"Your TallyPrime demo has been scheduled with Optimum Prime Solutions."
-        )
-        client_body = (
-            f"Hello {client_name}! 👋\n\n"
-            f"{intro_line}\n\n"
-            f"📆 *Date:* {display_date}\n"
-            f"🕐 *Time:* {demo_time} (EAT)\n"
-        )
+        # Uses the approved `demo_confirmation` template (required for business-initiated
+        # sends once the app is published — free text would be rejected outside a session).
+        # Covers both new bookings and reschedules; the Meet link / Google Calendar link
+        # and reschedule-specific wording from the old free-text version are dropped since
+        # the approved template body is fixed — client can still get the Meet link by
+        # replying, or from the admin panel.
         if demo_type == "online":
-            if meet_link:
-                client_body += (
-                    f"\n📹 *Your Google Meet link:*\n"
-                    f"{meet_link}\n"
-                    f"_(Click to join at your scheduled time)_\n"
-                )
-            if cal_link:
-                client_body += (
-                    f"\n🗓️ *Add to Google Calendar:*\n"
-                    f"{cal_link}\n"
-                )
+            details = f"Join here: {meet_link}" if meet_link else "Meeting link will be shared shortly"
         else:
-            # Physical demo
-            if demo_location:
-                client_body += f"\n📍 *Location:* {demo_location}\n"
-            client_body += f"\n🤝 Our team will meet you in person at the scheduled time.\n"
-        client_body += (
-            f"\n⏰ We'll send you a reminder the day before your demo.\n\n"
-            f"Any questions? Reach us anytime:\n"
-            f"📞 *+254 116 246 074*\n"
-            f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-            f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
-        )
+            details = f"Our office: {demo_location}" if demo_location else "Location details to follow"
 
-        r = _wa_send(norm_client, client_body)
+        r = _wa_send_template(norm_client, "demo_confirmation", [client_name, display_date, demo_time, details])
         results["client"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
     # ── Save booking to Firebase ─────────────────────────────────────────────
