@@ -597,29 +597,16 @@ def get_zawadi_reply(messages: list) -> str:
         return "I'm having a little trouble connecting right now. Please reach us directly on WhatsApp at +254 116 246 074 or visit www.optimumprimesolutions.co.ke"
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
-
-
-@app.route("/chat", methods=["POST"])
-def chat():
+def process_zawadi_reply(reply: str) -> dict:
     """
-    Zawadi AI chat endpoint.
-    Expects: { "messages": [{"role": "user"|"assistant", "content": "..."}] }
-    Returns: { "reply": "...", "handoff": false } or { "handoff": true, "name": "...", "phone": "...", "interest": "..." }
+    Detect whether Zawadi's reply is a booking/handoff JSON payload and, if so,
+    run the same side effects (Firebase save, team alert, client confirmation)
+    regardless of which channel (website widget or WhatsApp) triggered it.
+    Always returns a dict with a 'reply' key holding text safe to show/send back.
     """
     import json as _json
-    data = request.get_json(force=True, silent=True) or {}
-    messages = data.get("messages", [])
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
 
-    reply = get_zawadi_reply(messages)
-
-    # Detect if Zawadi returned a JSON response (booking or handoff)
     try:
-        # Strip markdown code fences if present
         clean = reply.strip()
         if clean.startswith('```'):
             clean = clean.split('```')[1]
@@ -642,22 +629,18 @@ def chat():
 
                 norm_phone = normalize_phone(phone)
 
-                # Format date nicely for messages
                 try:
-                    from datetime import date as _date
                     dt = datetime.strptime(demo_date, '%Y-%m-%d')
                     display_date = dt.strftime('%A, %d %B %Y')
                 except Exception:
                     display_date = demo_date
 
-                # Format time nicely (HH:MM → 10:00 AM)
                 try:
                     t = datetime.strptime(demo_time, '%H:%M')
                     display_time = t.strftime('%I:%M %p').lstrip('0')
                 except Exception:
                     display_time = demo_time
 
-                # ── Save lead to Firebase as New (pending team confirmation) ──────
                 try:
                     lead_record = {
                         'name':        name,
@@ -676,7 +659,6 @@ def chat():
                 except Exception as e:
                     print(f'Firebase save error: {e}')
 
-                # ── Notify office team (pending approval) ─────────────────────
                 try:
                     req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo')
                     req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
@@ -697,7 +679,9 @@ def chat():
                 except Exception as e:
                     print(f'Office notify error: {e}')
 
-                # ── Send working-on-it message to client (no Meet link yet) ────
+                # Only send the "working on it" WhatsApp confirmation when this booking
+                # came from the website widget — a WhatsApp-originated booking already
+                # has this reply text delivered directly as the bot's response.
                 try:
                     client_body = (
                         f'Hello {name}! 👋\n\n'
@@ -713,7 +697,7 @@ def chat():
                 except Exception as e:
                     print(f'Client notify error: {e}')
 
-                return jsonify({
+                return {
                     'booking': True,
                     'name': name,
                     'phone': phone,
@@ -726,7 +710,7 @@ def chat():
                         f"Our team will review and confirm your slot shortly — you'll get a WhatsApp message once it's confirmed. "
                         f"Questions? Call us on +254 116 246 074."
                     )
-                })
+                }
 
             # ── GENERAL HANDOFF (non-booking) ─────────────────────────────────
             if parsed.get('handoff'):
@@ -734,7 +718,6 @@ def chat():
                 phone    = parsed.get('phone', '')
                 interest = parsed.get('interest', 'General enquiry via Zawadi chatbot')
 
-                # Fire team alert via WhatsApp
                 try:
                     alert = (
                         f'🤖 *Zawadi Handoff — New Lead*\n\n'
@@ -749,7 +732,6 @@ def chat():
                 except Exception:
                     pass
 
-                # Save to Firebase
                 try:
                     lead_record = {
                         'name':      name,
@@ -763,17 +745,39 @@ def chat():
                 except Exception:
                     pass
 
-                return jsonify({
+                return {
                     'handoff': True,
                     'name': name,
                     'phone': phone,
                     'interest': interest,
-                    'whatsapp_url': f"https://wa.me/254116246074?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}"
-                })
+                    'whatsapp_url': f"https://wa.me/254727209720?text=Hi%2C%20I%27m%20{name.replace(' ', '%20')}%20and%20I%27m%20interested%20in%20{interest.replace(' ', '%20')}",
+                    'reply': f"Thanks {name}! 🙌 A member of our team will reach out to you shortly. Feel free to ask anything else in the meantime.",
+                }
     except Exception as e:
-        print(f'Chat JSON parse error: {e}')
+        print(f'Zawadi reply JSON parse error: {e}')
 
-    return jsonify({'reply': reply, 'handoff': False})
+    return {'reply': reply, 'handoff': False}
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    """
+    Zawadi AI chat endpoint.
+    Expects: { "messages": [{"role": "user"|"assistant", "content": "..."}] }
+    Returns: { "reply": "...", "handoff": false } or { "handoff": true, "name": "...", "phone": "...", "interest": "..." }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    messages = data.get("messages", [])
+    if not messages:
+        return jsonify({"error": "No messages provided"}), 400
+
+    reply = get_zawadi_reply(messages)
+    return jsonify(process_zawadi_reply(reply))
 
 
 @app.route("/webhook/meta-status", methods=["GET", "POST"])
@@ -825,7 +829,7 @@ def meta_status_webhook():
                         for team_num in TEAM_NUMBERS:
                             _wa_send(team_num, alert_body)
 
-                # Incoming customer messages
+                # Incoming customer messages — handled by Zawadi, the AI assistant
                 contacts = value.get("contacts", [])
                 contact_name = contacts[0].get("profile", {}).get("name", "") if contacts else ""
                 for msg in value.get("messages", []):
@@ -836,38 +840,58 @@ def meta_status_webhook():
                         continue
                     text = msg.get("text", {}).get("body", "") if msg_type == "text" else f"[{msg_type} message]"
 
+                    # Fetch conversation state BEFORE logging this message, so history
+                    # doesn't double up when we build it for Gemini below.
+                    try:
+                        existing_convo = requests.get(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}.json", timeout=5).json() or {}
+                    except Exception:
+                        existing_convo = {}
+                    existing_meta = existing_convo.get("meta") or {}
+                    is_first_contact = not existing_meta.get("everContacted")
+                    bot_paused = bool(existing_meta.get("botPaused"))
+
                     _log_wa_message(from_number, "in", text, name=contact_name, message_id=msg_id)
 
-                    # Alert the team so a human can take over the conversation
-                    alert = (
-                        f"💬 *New WhatsApp Message*\n\n"
-                        f"👤 *From:* {contact_name or 'Unknown'}\n"
-                        f"📞 *Phone:* +{from_number}\n"
-                        f"📝 *Message:* {text}\n\n"
-                        f"Reply from the admin panel's WhatsApp tab or directly on WhatsApp."
-                    )
-                    for team_num in TEAM_NUMBERS:
-                        _wa_send(team_num, alert)
-
-                    # Auto-reply with a greeting only the first time this number gets in touch —
-                    # afterwards a human takes over, so we don't keep bot-replying mid-conversation.
-                    try:
-                        existing = requests.get(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta/greeted.json", timeout=5).json()
-                    except Exception:
-                        existing = None
-                    if not existing:
-                        greeting = (
-                            f"Hello {contact_name or 'there'}! 👋\n\n"
-                            f"Thanks for messaging *Optimum Prime Solutions* — Kenya's Certified TallyPrime Partner.\n\n"
-                            f"A member of our team will get back to you shortly. In the meantime:\n"
-                            f"📞 *+254 116 246 074*\n"
-                            f"🌐 *www.optimumprimesolutions.co.ke*"
+                    # Alert the team once per new conversation — Zawadi handles the
+                    # back-and-forth from here, so we don't spam an alert per message.
+                    if is_first_contact:
+                        alert = (
+                            f"💬 *New WhatsApp Conversation*\n\n"
+                            f"👤 *From:* {contact_name or 'Unknown'}\n"
+                            f"📞 *Phone:* +{from_number}\n\n"
+                            f"Zawadi (our AI assistant) is replying. Check the admin panel's "
+                            f"WhatsApp tab anytime to see the conversation or jump in yourself."
                         )
-                        _wa_send(from_number, greeting)
+                        for team_num in TEAM_NUMBERS:
+                            _wa_send(team_num, alert)
                         try:
-                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"greeted": True}, timeout=5)
+                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"everContacted": True}, timeout=5)
                         except Exception:
                             pass
+
+                    # Only text messages get a bot reply; only while no human has taken over.
+                    if msg_type != "text" or bot_paused:
+                        continue
+
+                    stored_messages = existing_convo.get("messages") or {}
+                    history = sorted(stored_messages.values(), key=lambda m: m.get("timestamp", ""))
+                    gemini_messages = [
+                        {"role": "user" if m.get("direction") == "in" else "assistant", "content": m.get("text", "")}
+                        for m in history
+                    ]
+                    gemini_messages.append({"role": "user", "content": text})
+
+                    try:
+                        zawadi_reply = get_zawadi_reply(gemini_messages)
+                        result = process_zawadi_reply(zawadi_reply)
+                        reply_text = result.get("reply") or zawadi_reply
+                        _wa_send(from_number, reply_text, name=contact_name)
+
+                        # A booking or handoff means a human takes it from here.
+                        if result.get("booking") or result.get("handoff"):
+                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"botPaused": True}, timeout=5)
+                    except Exception as e:
+                        print(f"[Zawadi WhatsApp] Error generating/sending reply: {e}")
     except Exception as e:
         print(f"[Meta webhook] Error processing event: {e}")
 
@@ -876,14 +900,22 @@ def meta_status_webhook():
 
 @app.route("/whatsapp/reply", methods=["POST"])
 def whatsapp_reply():
-    """Send a manual WhatsApp reply from the admin panel's WhatsApp tab."""
+    """
+    Send a manual WhatsApp reply from the admin panel's WhatsApp tab.
+    Pauses Zawadi for this number, since a human is now handling the conversation.
+    """
     data = request.get_json(force=True, silent=True) or {}
     phone   = (data.get("phone") or "").strip()
     message = (data.get("message") or "").strip()
     if not phone or not message:
         return jsonify({"success": False, "error": "phone and message are required"}), 400
 
-    result = _wa_send(normalize_phone(phone), message)
+    norm_phone = normalize_phone(phone)
+    result = _wa_send(norm_phone, message)
+    try:
+        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{norm_phone.lstrip('+')}/meta.json", json={"botPaused": True}, timeout=5)
+    except Exception:
+        pass
     return jsonify(result)
 
 @app.route("/new-lead", methods=["POST"])
