@@ -548,13 +548,14 @@ RULES:
 
 GENERAL HANDOFF (non-booking enquiries):
 When the user wants to speak to a person, get a quote, or be called back:
-1. Ask for their name and WhatsApp number.
-2. Once you have both, respond with ONLY this exact JSON:
-   {"handoff": true, "name": "<their name>", "phone": "<their phone>", "interest": "<brief summary>"}
-3. Do NOT include any other text before or after the JSON.
+1. Name: if you already know their name — either from earlier in this conversation, or from the WHATSAPP PROFILE note below — do NOT ask again from scratch. Just confirm it briefly, e.g. "I'll pass this to our team as {name} — is that the right name to use?" Only ask "What's your name?" outright if you truly have no name to work with.
+2. Phone number: if this conversation is happening on WhatsApp, you already have their number — do NOT ask for it. Only ask for a phone number if there is no WHATSAPP PROFILE note at all (i.e. this is the website chat widget, not WhatsApp).
+3. Once you have a name (confirmed or given) and a phone number (known from WhatsApp, or given on the website), respond with ONLY this exact JSON:
+   {"handoff": true, "name": "<their name>", "phone": "<their phone, or empty string if on WhatsApp and not separately given>", "interest": "<brief summary>"}
+4. Do NOT include any other text before or after the JSON.
 
-If the user declines to provide their number, respond:
-"No problem! You can reach us anytime on WhatsApp at +254 116 246 074 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
+If this is the website widget (no WHATSAPP PROFILE note) and the user declines to provide their number, respond:
+"No problem! You can reach us anytime on WhatsApp at +254 727 209 720 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
 
 PROACTIVE ESCALATION (different from the handoff above — this is YOUR call, not the user's request):
 Sometimes you should hand off even though the user never asked for a person — for example: they've asked essentially the same question 2+ times without a satisfying answer, they express frustration ("this isn't helping", "you don't understand", "forget it", "never mind"), their question is genuinely outside TallyPrime / Cloud Hosting / EOS® / Biz Analyst and you cannot help, or the conversation is clearly going in circles.
@@ -781,8 +782,8 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
 
             # ── GENERAL HANDOFF (non-booking) ─────────────────────────────────
             if parsed.get('handoff'):
-                name     = parsed.get('name', 'Unknown')
-                phone    = parsed.get('phone', '')
+                name     = parsed.get('name') or from_name or 'Unknown'
+                phone    = parsed.get('phone') or from_phone or ''
                 interest = parsed.get('interest', 'General enquiry via Zawadi chatbot')
 
                 try:
