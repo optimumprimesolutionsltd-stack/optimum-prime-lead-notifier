@@ -525,8 +525,8 @@ You have full authority to collect booking requests on behalf of Optimum Prime S
 
 Then collect the following details ONE AT A TIME in this order:
 
-1. Full name
-2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678)
+1. Full name — if you already know it (from earlier in this conversation or the WHATSAPP PROFILE note below), confirm it briefly instead of asking from scratch, e.g. "I'll use {name} for this booking — is that right?"
+2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678) — if this conversation is happening on WhatsApp (i.e. there is a WHATSAPP PROFILE note below), you already have their number. Do NOT ask for it — skip straight to company name, and use an empty string "" for phone in the final JSON below (our system fills it in automatically). Only ask for a phone number if there is no WHATSAPP PROFILE note at all (i.e. this is the website chat widget).
 3. Company name
 4. Preferred date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
 5. Preferred time slot (e.g. 10:00 AM, 2:00 PM)
@@ -687,8 +687,8 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
 
             # ── DEMO BOOKING (end-to-end) ─────────────────────────────────────
             if parsed.get('booking'):
-                name       = parsed.get('name', 'Unknown')
-                phone      = parsed.get('phone', '')
+                name       = parsed.get('name') or from_name or 'Unknown'
+                phone      = parsed.get('phone') or from_phone or ''
                 company    = parsed.get('company', '')
                 demo_date  = parsed.get('demoDate', '')   # YYYY-MM-DD
                 demo_time  = parsed.get('demoTime', '')   # HH:MM 24h
