@@ -806,7 +806,12 @@ def meta_status_webhook():
                     status    = status_obj.get("status", "")
                     to_number = status_obj.get("recipient_id", "")
                     msg_id    = status_obj.get("id", "")
-                    if status in {"failed", "undelivered"}:
+                    # Skip alerting on failures where the ORIGINAL failed message was sent
+                    # to a team number (i.e. it was one of our own alerts). Otherwise a
+                    # failed alert triggers another alert, which can also fail, forever —
+                    # an infinite feedback loop.
+                    is_team_recipient = to_number.lstrip("+") in {n.lstrip("+") for n in TEAM_NUMBERS}
+                    if status in {"failed", "undelivered"} and not is_team_recipient:
                         errors = status_obj.get("errors", [{}])
                         err_msg = errors[0].get("message", "Unknown error") if errors else "Unknown error"
                         alert_body = (
