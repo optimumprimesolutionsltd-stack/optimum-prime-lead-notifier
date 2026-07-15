@@ -577,7 +577,7 @@ CONVERSATION STYLE:
 - If you know their name, use it naturally in conversation.
 """
 
-def get_zawadi_reply(messages: list) -> str:
+def get_zawadi_reply(messages: list, contact_name: str = "") -> str:
     """
     Call Google Gemini 2.5 Flash with the Zawadi system prompt.
 
@@ -587,6 +587,11 @@ def get_zawadi_reply(messages: list) -> str:
     Conversation history is rebuilt as a strictly alternating user/model sequence
     — the Gemini API rejects histories where two consecutive turns share the same
     role, which was causing Gemini to lose context and re-ask answered questions.
+
+    `contact_name` is the sender's WhatsApp profile name (unavailable on the
+    website widget) — told to Zawadi explicitly so it doesn't draw a blank if
+    the customer says "I already gave you my name," and can confirm/use it
+    for booking or handoff instead of just re-asking.
     """
     try:
         from google import genai
@@ -603,6 +608,16 @@ def get_zawadi_reply(messages: list) -> str:
             "Always use this when calculating dates, days of the week, or referring "
             "to upcoming events. Never assume the year is 2024."
         )
+        if contact_name:
+            dynamic_prompt += (
+                f"\n\nWHATSAPP PROFILE: This customer's WhatsApp display name is \"{contact_name}\". "
+                "This might be their personal name, or a business/generic name — it is NOT confirmed as "
+                "their actual name yet. If you need their name for a booking or handoff and they haven't "
+                "typed it in the conversation, ask them to confirm: e.g. \"I see your WhatsApp is set up "
+                f"as '{contact_name}' — is that the name I should use, or would you like to give me another?\" "
+                "If they say they \"already gave\" their name, this is almost certainly what they mean — "
+                "use it (after confirming) rather than saying you have no name on record."
+            )
 
         # ── Build a strictly alternating user/model history ───────────────────
         # The frontend sends roles as 'user' or 'assistant'; Gemini expects 'user'/'model'.
@@ -974,7 +989,7 @@ def meta_status_webhook():
                     gemini_messages.append({"role": "user", "content": text})
 
                     try:
-                        zawadi_reply = get_zawadi_reply(gemini_messages)
+                        zawadi_reply = get_zawadi_reply(gemini_messages, contact_name=contact_name)
                         result = process_zawadi_reply(zawadi_reply, from_phone=f"+{from_number}", from_name=contact_name)
                         reply_text = result.get("reply") or zawadi_reply
                         _wa_send(from_number, reply_text, name=contact_name, force_log=True)
