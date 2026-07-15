@@ -796,6 +796,7 @@ def meta_status_webhook():
 
     # ── Status / message events (POST) ────────────────────────────────────────
     data = request.get_json(force=True, silent=True) or {}
+    print(f"[Meta webhook] Received payload: {data}")
     try:
         for entry in data.get("entry", []):
             for change in entry.get("changes", []):
