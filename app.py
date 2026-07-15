@@ -88,7 +88,7 @@ def _wa_send(to: str, body: str, name: str = "") -> dict:
         return {"success": False, "message_id": "", "error": str(e)}
 
 
-def _wa_send_template(to: str, template_name: str, params: list, language: str = "en_US", name: str = "") -> dict:
+def _wa_send_template(to: str, template_name: str, params: list, language: str = "en", name: str = "") -> dict:
     """
     Send an approved WhatsApp message template via Meta Cloud API.
     `params` is an ordered list of strings filling {{1}}, {{2}}, ... in the template body.
