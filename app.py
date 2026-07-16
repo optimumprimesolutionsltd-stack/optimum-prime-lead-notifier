@@ -995,9 +995,11 @@ def meta_status_webhook():
                         reply_text = result.get("reply") or zawadi_reply
                         _wa_send(from_number, reply_text, name=contact_name, force_log=True)
 
-                        # A booking, handoff, or escalation means a human takes it from here.
-                        if result.get("booking") or result.get("handoff") or result.get("escalate"):
-                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"botPaused": True}, timeout=5)
+                        # Booking/handoff/escalation alert the team, but Zawadi keeps
+                        # replying (its own message tells the customer to "ask anything
+                        # else in the meantime") until a team member actually takes over
+                        # — either by sending a manual reply or toggling the admin panel
+                        # switch, both of which set botPaused separately.
                     except Exception as e:
                         print(f"[Zawadi WhatsApp] Error generating/sending reply: {e}")
     except Exception as e:
