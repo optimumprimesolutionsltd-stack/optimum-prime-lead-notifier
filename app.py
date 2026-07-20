@@ -40,6 +40,10 @@ RESEND_FROM           = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <
 RESEND_WEBHOOK_SECRET = os.environ.get("RESEND_WEBHOOK_SECRET", "").strip()
 RESEND_API_URL        = "https://api.resend.com/emails"
 
+# Team inbox that gets an email alert for every new lead/webinar registration,
+# alongside the existing WhatsApp alerts to TEAM_NUMBERS.
+ADMIN_NOTIFY_EMAIL    = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
+
 FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
 FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
 FIREBASE_LEADS_URL     = f"{FIREBASE_BASE}/leads.json"
@@ -313,6 +317,54 @@ def fetch_firebase(url: str) -> dict:
 
 # ── WhatsApp Messaging ────────────────────────────────────────────────────────
 
+def notify_team_email(lead: dict) -> dict:
+    """
+    Email ADMIN_NOTIFY_EMAIL with the same lead details sent to the team over
+    WhatsApp. Best-effort — a missing ADMIN_NOTIFY_EMAIL/RESEND_API_KEY or a
+    Resend failure never blocks the WhatsApp alert or the lead save.
+    """
+    if not ADMIN_NOTIFY_EMAIL:
+        return {"success": False, "error": "ADMIN_NOTIFY_EMAIL not configured"}
+
+    name      = lead.get("name", "Unknown")
+    phone     = lead.get("phone", "Not provided")
+    email     = lead.get("email", "Not provided")
+    company   = lead.get("company", "Not provided")
+    interest  = lead.get("interest", "General enquiry")
+    source    = lead.get("source", "Website")
+    message   = lead.get("message", "")
+    demo_date = lead.get("demoDate", "")
+    demo_time = lead.get("demoTime", "")
+
+    rows = [
+        ("Name", name), ("Company", company), ("Phone", phone), ("Email", email),
+        ("Interest", interest), ("Source", source),
+    ]
+    if demo_date:
+        rows.append(("Preferred date", demo_date))
+    if demo_time:
+        rows.append(("Preferred time", demo_time))
+    if message:
+        rows.append(("Message", message))
+
+    rows_html = "".join(
+        f'<tr><td style="padding:6px 12px;color:#888;white-space:nowrap;">{html.escape(k)}</td>'
+        f'<td style="padding:6px 12px;">{html.escape(str(v))}</td></tr>'
+        for k, v in rows
+    )
+    email_html = f"""
+    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 520px; margin: 0 auto; color: #1A1A2E;">
+      <h1 style="color: #C0392B; font-size: 20px;">🔔 New Lead — Optimum Prime Solutions</h1>
+      <table style="border-collapse: collapse; font-size: 14px;">{rows_html}</table>
+      <p style="font-size: 13px; color: #888; margin-top: 24px;">
+        Reply quickly — leads convert best within 5 minutes.<br/>
+        <a href="https://www.optimumprimesolutions.co.ke/admin" style="color: #C0392B;">Manage in admin panel</a>
+      </p>
+    </div>
+    """
+    return _send_email(ADMIN_NOTIFY_EMAIL, f"New lead: {name} — {interest}", email_html)
+
+
 def notify_team(lead: dict) -> list:
     name      = lead.get("name", "Unknown")
     phone     = lead.get("phone", "Not provided")
@@ -326,6 +378,13 @@ def notify_team(lead: dict) -> list:
 
     is_webinar = "Webinar" in interest
     results = []
+
+    # Best-effort email alert alongside WhatsApp — never let an email failure
+    # block or delay the WhatsApp notifications below.
+    try:
+        notify_team_email(lead)
+    except Exception as e:
+        print(f"[Team email] error: {e}")
 
     if not is_webinar:
         # Uses the approved `new_lead_alert` template (required for business-initiated
