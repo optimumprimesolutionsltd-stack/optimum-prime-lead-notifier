@@ -263,15 +263,17 @@ def _email_footer(to_email: str) -> str:
     """
 
 
-def _greeting_name(subscriber: dict) -> str:
+def _first_name(subscriber: dict) -> str:
     """
-    First name to use in an email greeting. Only uses a real stored `name`
-    — deliberately does NOT guess from the email address (e.g. 'info@...'
-    or 'optimumprimesolutionsltd@...' produce awkward, wrong-looking
-    greetings). Falls back to 'there' for subscribers with no name on file.
+    First name to use in an email greeting, or '' if none is stored.
+    Deliberately does NOT guess from the email address (e.g. 'info@...' or
+    'optimumprimesolutionsltd@...' produce awkward, wrong-looking
+    greetings) — callers should omit the greeting entirely when this is
+    empty (shared/team inboxes), rather than falling back to something
+    generic like 'Hi there,'.
     """
     name = (subscriber.get("name") or "").strip()
-    return name.split()[0] if name else "there"
+    return name.split()[0] if name else ""
 
 
 def _verify_resend_webhook(payload: bytes, headers: dict) -> bool:
@@ -1290,10 +1292,11 @@ def newsletter_subscribe():
         print(f"Firebase newsletter save error: {e}")
 
     # ── Send congratulatory email to the subscriber ───────────────────────────
-    greeting = _greeting_name({"email": email, "name": name})
+    greeting_name = _first_name({"email": email, "name": name})
+    headline = f"You're on the list, {html.escape(greeting_name)}! 🎉" if greeting_name else "You're on the list! 🎉"
     email_html = f"""
     <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-      <h1 style="color: #C0392B; font-size: 22px;">You're on the list, {html.escape(greeting)}! 🎉</h1>
+      <h1 style="color: #C0392B; font-size: 22px;">{headline}</h1>
       <p style="font-size: 15px; line-height: 1.6;">
         Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips,
         cloud hosting guides, and EOS&reg; business insights straight to your inbox.
@@ -1374,7 +1377,7 @@ def unsubscribe():
 def _active_subscribers() -> list:
     """De-duplicated {email, name} dicts for every subscriber whose status
     isn't 'unsubscribed' — `name` may be '' for subscribers who signed up
-    before the name field existed; _greeting_name() handles that fallback."""
+    before the name field existed; _first_name() handles that case."""
     subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
     seen = set()
     result = []
@@ -1442,9 +1445,11 @@ def notify_subscribers():
     post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
 
     def build_html(subscriber):
+        name = _first_name(subscriber)
+        heading = f"Hi {html.escape(name)}, new on the blog: {html.escape(title)}" if name else f"New on the blog: {html.escape(title)}"
         return f"""
         <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-          <h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(_greeting_name(subscriber))}, new on the blog: {html.escape(title)}</h1>
+          <h1 style="color: #C0392B; font-size: 20px;">{heading}</h1>
           <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
           <p style="margin: 24px 0;">
             <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
@@ -1479,10 +1484,15 @@ def broadcast():
     )
 
     def build_html(subscriber):
+        name = _first_name(subscriber)
+        greeting = f'<h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(name)},</h1>' if name else ""
+        subject_style = "font-size: 15px; line-height: 1.6; font-weight: 600; margin: -4px 0 10px;" if name \
+            else "color: #C0392B; font-size: 20px; font-weight: 700; margin: 0 0 14px;"
+        subject_tag = "p" if name else "h1"
         return f"""
         <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-          <h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(_greeting_name(subscriber))},</h1>
-          <p style="font-size: 15px; line-height: 1.6; font-weight: 600; margin: -4px 0 10px;">{html.escape(subject)}</p>
+          {greeting}
+          <{subject_tag} style="{subject_style}">{html.escape(subject)}</{subject_tag}>
           {paragraphs}
           {_email_footer(subscriber["email"])}
         </div>
