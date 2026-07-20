@@ -1451,6 +1451,8 @@ def notify_subscribers():
         return jsonify({"error": "title and slug are required"}), 400
 
     post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
+    share_body = f"I think you'd love this newsletter: {post_url}"
+    share_link = "mailto:?" + urllib.parse.urlencode({"subject": "You might like this", "body": share_body}, quote_via=urllib.parse.quote)
 
     def build_html(subscriber):
         name = _first_name(subscriber)
@@ -1462,6 +1464,9 @@ def notify_subscribers():
           <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
           <p style="margin: 24px 0;">
             <a href="{post_url}" style="background:{EMAIL_ACCENT};color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
+          </p>
+          <p style="font-size:13px;color:{EMAIL_TEXT_DIM};">
+            Like the newsletter? <a href="{share_link}" style="color:{EMAIL_ACCENT};">Share it with a friend!</a>
           </p>
           {_email_footer(subscriber["email"])}
         </div>
