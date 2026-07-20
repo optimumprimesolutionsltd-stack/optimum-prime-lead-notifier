@@ -10,6 +10,7 @@ import csv
 import io
 import uuid
 import hashlib
+import hmac
 import urllib.parse
 import requests
 from datetime import datetime, timedelta, timezone
@@ -44,11 +45,17 @@ RESEND_API_URL        = "https://api.resend.com/emails"
 # alongside the existing WhatsApp alerts to TEAM_NUMBERS.
 ADMIN_NOTIFY_EMAIL    = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
 
-FIREBASE_BASE           = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
-FIREBASE_WEBINAR_URL   = f"{FIREBASE_BASE}/webinar_registrants.json"
-FIREBASE_LEADS_URL     = f"{FIREBASE_BASE}/leads.json"
-FIREBASE_NEWSLETTER_URL = f"{FIREBASE_BASE}/newsletter_subscribers.json"
-FIREBASE_WA_CONVOS_BASE = f"{FIREBASE_BASE}/whatsapp_conversations"
+# Signs one-click unsubscribe links so anyone can unsubscribe without logging
+# in, but only for their own address (can't be used to unsubscribe someone
+# else without also knowing their exact email — the token is a keyed hash of it).
+UNSUB_SECRET          = os.environ.get("UNSUB_SECRET", "").strip()
+
+FIREBASE_BASE            = "https://optimum-prime-website-default-rtdb.europe-west1.firebasedatabase.app"
+FIREBASE_WEBINAR_URL     = f"{FIREBASE_BASE}/webinar_registrants.json"
+FIREBASE_LEADS_URL       = f"{FIREBASE_BASE}/leads.json"
+FIREBASE_NEWSLETTER_BASE = f"{FIREBASE_BASE}/newsletter_subscribers"
+FIREBASE_NEWSLETTER_URL  = f"{FIREBASE_NEWSLETTER_BASE}.json"
+FIREBASE_WA_CONVOS_BASE  = f"{FIREBASE_BASE}/whatsapp_conversations"
 
 # Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
 # Messages are SENT FROM +254727209720 (the registered API number)
@@ -202,6 +209,58 @@ def _send_email(to: str, subject: str, html: str) -> dict:
     except Exception as e:
         print(f"[Resend] Exception sending to {to}: {e}")
         return {"success": False, "id": "", "error": str(e)}
+
+
+RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
+
+
+def _send_email_batch(emails: list) -> dict:
+    """
+    Send up to 100 emails in one Resend API call (POST /emails/batch).
+    `emails` is a list of {from, to, subject, html} dicts — each can have a
+    different recipient/body, unlike a single broadcast to one audience.
+    Returns a dict with keys: success (bool), error (str).
+    """
+    if not RESEND_API_KEY:
+        return {"success": False, "error": "RESEND_API_KEY not configured"}
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(RESEND_BATCH_URL, json=emails, headers=headers, timeout=20)
+        data = resp.json()
+        if resp.status_code in (200, 201):
+            return {"success": True, "error": ""}
+        else:
+            err = data.get("message", str(data))
+            print(f"[Resend batch] Send failed: {err}")
+            return {"success": False, "error": err}
+    except Exception as e:
+        print(f"[Resend batch] Exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _unsub_token(email: str) -> str:
+    """Keyed hash of a lowercased email — lets someone unsubscribe their own
+    address via a plain link with no login, but can't be forged for another
+    address without also knowing UNSUB_SECRET."""
+    return hmac.new(UNSUB_SECRET.encode(), email.strip().lower().encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def _unsub_link(email: str) -> str:
+    return f"{SERVICE_URL}/unsubscribe?email={urllib.parse.quote(email)}&token={_unsub_token(email)}"
+
+
+def _email_footer(to_email: str) -> str:
+    """Standard footer appended to every subscriber-facing email — required
+    so newsletter/broadcast sends have a working one-click unsubscribe."""
+    return f"""
+    <p style="font-size:11px;color:#aaa;margin-top:28px;border-top:1px solid #eee;padding-top:12px;">
+      You're receiving this because you subscribed at optimumprimesolutions.co.ke.
+      <a href="{_unsub_link(to_email)}" style="color:#aaa;">Unsubscribe</a>
+    </p>
+    """
 
 
 def _verify_resend_webhook(payload: bytes, headers: dict) -> bool:
@@ -1232,6 +1291,7 @@ def newsletter_subscribe():
       <p style="font-size: 13px; color: #888; margin-top: 32px;">
         Optimum Prime Solutions &middot; Ruiru, Kenya &middot; +254 116 246 074
       </p>
+      {_email_footer(email)}
     </div>
     """
     email_result = _send_email(email, "You're subscribed — Optimum Prime Solutions", email_html)
@@ -1260,6 +1320,109 @@ def newsletter_subscribe():
         "notified": sum(1 for r in results if r.get("success")),
         "details": results
     })
+
+
+@app.route("/unsubscribe", methods=["GET"])
+def unsubscribe():
+    """
+    One-click unsubscribe link target — every subscriber-facing email footer
+    points here via _email_footer(). No login required; the token proves the
+    request matches the address it claims (see _unsub_token).
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    token = (request.args.get("token") or "").strip()
+
+    if not email or not token or not UNSUB_SECRET or not hmac.compare_digest(token, _unsub_token(email)):
+        return "This unsubscribe link is invalid or has expired.", 400
+
+    subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
+    updated = 0
+    for key, r in subscribers.items():
+        if isinstance(r, dict) and r.get("email", "").strip().lower() == email:
+            try:
+                requests.patch(f"{FIREBASE_NEWSLETTER_BASE}/{key}.json", json={"status": "unsubscribed"}, timeout=5)
+                updated += 1
+            except Exception as e:
+                print(f"[Unsubscribe] Firebase patch error: {e}")
+
+    return f"""
+    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 420px; margin: 80px auto; text-align: center; color: #1A1A2E;">
+      <h2 style="color: #C0392B;">You're unsubscribed</h2>
+      <p style="font-size: 15px; color: #555;">
+        {html.escape(email)} won't receive any more emails from Optimum Prime Solutions.
+      </p>
+    </div>
+    """, 200
+
+
+@app.route("/notify-subscribers", methods=["POST"])
+def notify_subscribers():
+    """
+    Email every active newsletter subscriber about a new blog post.
+    Expects: { "title": "...", "excerpt": "...", "slug": "..." }
+    Triggered manually via the "Notify Subscribers" button in the admin
+    Blog editor — never fires automatically on save/edit.
+    """
+    data    = request.get_json(force=True, silent=True) or {}
+    title   = (data.get("title") or "").strip()
+    excerpt = (data.get("excerpt") or "").strip()
+    slug    = (data.get("slug") or "").strip()
+    if not title or not slug:
+        return jsonify({"error": "title and slug are required"}), 400
+
+    post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
+
+    subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
+    # Only "active" — anyone who's hit /unsubscribe is excluded automatically.
+    seen = set()
+    active_emails = []
+    for r in subscribers.values():
+        if not isinstance(r, dict) or r.get("status", "active") != "active":
+            continue
+        addr = (r.get("email") or "").strip()
+        if addr and addr.lower() not in seen:
+            seen.add(addr.lower())
+            active_emails.append(addr)
+
+    if not active_emails:
+        return jsonify({"success": True, "sent": 0, "total_subscribers": 0, "message": "No active subscribers"})
+
+    sent = 0
+    errors = []
+    # Resend's batch endpoint accepts up to 100 emails per call.
+    for i in range(0, len(active_emails), 100):
+        chunk = active_emails[i:i + 100]
+        batch_payload = []
+        for addr in chunk:
+            body_html = f"""
+            <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+              <h1 style="color: #C0392B; font-size: 20px;">New on the blog: {html.escape(title)}</h1>
+              <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
+              <p style="margin: 24px 0;">
+                <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
+              </p>
+              {_email_footer(addr)}
+            </div>
+            """
+            batch_payload.append({
+                "from": RESEND_FROM,
+                "to": [addr],
+                "subject": f"New post: {title}",
+                "html": body_html,
+            })
+        result = _send_email_batch(batch_payload)
+        if result.get("success"):
+            sent += len(chunk)
+        else:
+            errors.append(result.get("error", "unknown error"))
+
+    return jsonify({
+        "success": len(errors) == 0,
+        "sent": sent,
+        "total_subscribers": len(active_emails),
+        "errors": errors,
+    })
+
 
 @app.route("/book-demo", methods=["POST"])
 def book_demo():
