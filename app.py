@@ -265,19 +265,13 @@ def _email_footer(to_email: str) -> str:
 
 def _greeting_name(subscriber: dict) -> str:
     """
-    First name to use in an email greeting. Prefers a stored `name`; for
-    older subscribers who signed up before the name field existed, falls
-    back to a best-effort guess from the email's local part (e.g.
-    'jane.doe@x.com' -> 'Jane'). Never returns empty — worst case 'there'.
+    First name to use in an email greeting. Only uses a real stored `name`
+    — deliberately does NOT guess from the email address (e.g. 'info@...'
+    or 'optimumprimesolutionsltd@...' produce awkward, wrong-looking
+    greetings). Falls back to 'there' for subscribers with no name on file.
     """
     name = (subscriber.get("name") or "").strip()
-    if name:
-        return name.split()[0]
-    local = (subscriber.get("email") or "").split("@")[0]
-    local = re.sub(r"[._\-+0-9]+", " ", local).strip()
-    if local:
-        return local.split()[0].capitalize()
-    return "there"
+    return name.split()[0] if name else "there"
 
 
 def _verify_resend_webhook(payload: bytes, headers: dict) -> bool:
