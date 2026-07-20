@@ -1355,6 +1355,55 @@ def unsubscribe():
     """, 200
 
 
+def _active_subscriber_emails() -> list:
+    """De-duplicated list of every subscriber whose status isn't 'unsubscribed'."""
+    subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
+    seen = set()
+    emails = []
+    for r in subscribers.values():
+        if not isinstance(r, dict) or r.get("status", "active") != "active":
+            continue
+        addr = (r.get("email") or "").strip()
+        if addr and addr.lower() not in seen:
+            seen.add(addr.lower())
+            emails.append(addr)
+    return emails
+
+
+def _broadcast_to_subscribers(subject: str, build_html) -> dict:
+    """
+    Send `subject` to every active subscriber. `build_html(email) -> str`
+    builds each recipient's body so each one gets their own unsubscribe
+    link. Shared by /notify-subscribers and /broadcast. Batches in groups
+    of 100 (Resend's per-call limit); one bad address only fails its own
+    chunk, not the whole send.
+    """
+    active_emails = _active_subscriber_emails()
+    if not active_emails:
+        return {"success": True, "sent": 0, "total_subscribers": 0}
+
+    sent = 0
+    errors = []
+    for i in range(0, len(active_emails), 100):
+        chunk = active_emails[i:i + 100]
+        batch_payload = [
+            {"from": RESEND_FROM, "to": [addr], "subject": subject, "html": build_html(addr)}
+            for addr in chunk
+        ]
+        result = _send_email_batch(batch_payload)
+        if result.get("success"):
+            sent += len(chunk)
+        else:
+            errors.append(result.get("error", "unknown error"))
+
+    return {
+        "success": len(errors) == 0,
+        "sent": sent,
+        "total_subscribers": len(active_emails),
+        "errors": errors,
+    }
+
+
 @app.route("/notify-subscribers", methods=["POST"])
 def notify_subscribers():
     """
@@ -1372,56 +1421,53 @@ def notify_subscribers():
 
     post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
 
-    subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
-    # Only "active" — anyone who's hit /unsubscribe is excluded automatically.
-    seen = set()
-    active_emails = []
-    for r in subscribers.values():
-        if not isinstance(r, dict) or r.get("status", "active") != "active":
-            continue
-        addr = (r.get("email") or "").strip()
-        if addr and addr.lower() not in seen:
-            seen.add(addr.lower())
-            active_emails.append(addr)
+    def build_html(addr):
+        return f"""
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+          <h1 style="color: #C0392B; font-size: 20px;">New on the blog: {html.escape(title)}</h1>
+          <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
+          <p style="margin: 24px 0;">
+            <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
+          </p>
+          {_email_footer(addr)}
+        </div>
+        """
 
-    if not active_emails:
-        return jsonify({"success": True, "sent": 0, "total_subscribers": 0, "message": "No active subscribers"})
+    return jsonify(_broadcast_to_subscribers(f"New post: {title}", build_html))
 
-    sent = 0
-    errors = []
-    # Resend's batch endpoint accepts up to 100 emails per call.
-    for i in range(0, len(active_emails), 100):
-        chunk = active_emails[i:i + 100]
-        batch_payload = []
-        for addr in chunk:
-            body_html = f"""
-            <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-              <h1 style="color: #C0392B; font-size: 20px;">New on the blog: {html.escape(title)}</h1>
-              <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
-              <p style="margin: 24px 0;">
-                <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
-              </p>
-              {_email_footer(addr)}
-            </div>
-            """
-            batch_payload.append({
-                "from": RESEND_FROM,
-                "to": [addr],
-                "subject": f"New post: {title}",
-                "html": body_html,
-            })
-        result = _send_email_batch(batch_payload)
-        if result.get("success"):
-            sent += len(chunk)
-        else:
-            errors.append(result.get("error", "unknown error"))
 
-    return jsonify({
-        "success": len(errors) == 0,
-        "sent": sent,
-        "total_subscribers": len(active_emails),
-        "errors": errors,
-    })
+@app.route("/broadcast", methods=["POST"])
+def broadcast():
+    """
+    Email every active newsletter subscriber a custom one-off message — not
+    tied to a blog post. Expects: { "subject": "...", "body": "..." }.
+    `body` is plain text; blank-line-separated paragraphs become <p> tags,
+    single line breaks within a paragraph become <br>. Always HTML-escaped,
+    so subscriber content can never inject markup into the email.
+    Triggered manually via the "Send Broadcast" panel in the admin
+    Subscribers tab — never fires automatically.
+    """
+    data    = request.get_json(force=True, silent=True) or {}
+    subject = (data.get("subject") or "").strip()
+    body    = (data.get("body") or "").strip()
+    if not subject or not body:
+        return jsonify({"error": "subject and body are required"}), 400
+
+    paragraphs = "".join(
+        f'<p style="font-size:15px;line-height:1.6;margin:0 0 14px;">{html.escape(p).replace(chr(10), "<br>")}</p>'
+        for p in body.split("\n\n") if p.strip()
+    )
+
+    def build_html(addr):
+        return f"""
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+          <h1 style="color: #C0392B; font-size: 20px;">{html.escape(subject)}</h1>
+          {paragraphs}
+          {_email_footer(addr)}
+        </div>
+        """
+
+    return jsonify(_broadcast_to_subscribers(subject, build_html))
 
 
 @app.route("/book-demo", methods=["POST"])
