@@ -41,6 +41,14 @@ RESEND_FROM           = os.environ.get("RESEND_FROM", "Optimum Prime Solutions <
 RESEND_WEBHOOK_SECRET = os.environ.get("RESEND_WEBHOOK_SECRET", "").strip()
 RESEND_API_URL        = "https://api.resend.com/emails"
 
+# Dark theme for subscriber-facing emails (welcome, blog notify, broadcast) —
+# blue accent instead of the site's red, which reads as alarming in an inbox.
+EMAIL_BG       = "#0f172a"  # slate-900
+EMAIL_TEXT     = "#e2e8f0"  # slate-200
+EMAIL_TEXT_DIM = "#94a3b8"  # slate-400
+EMAIL_ACCENT   = "#3b82f6"  # blue-500
+EMAIL_BORDER   = "rgba(255,255,255,0.1)"
+
 # Team inbox that gets an email alert for every new lead/webinar registration,
 # alongside the existing WhatsApp alerts to TEAM_NUMBERS.
 ADMIN_NOTIFY_EMAIL    = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
@@ -256,9 +264,9 @@ def _email_footer(to_email: str) -> str:
     """Standard footer appended to every subscriber-facing email — required
     so newsletter/broadcast sends have a working one-click unsubscribe."""
     return f"""
-    <p style="font-size:11px;color:#aaa;margin-top:28px;border-top:1px solid #eee;padding-top:12px;">
+    <p style="font-size:11px;color:{EMAIL_TEXT_DIM};margin-top:28px;border-top:1px solid {EMAIL_BORDER};padding-top:12px;">
       You're receiving this because you subscribed at optimumprimesolutions.co.ke.
-      <a href="{_unsub_link(to_email)}" style="color:#aaa;">Unsubscribe</a>
+      <a href="{_unsub_link(to_email)}" style="color:{EMAIL_TEXT_DIM};">Unsubscribe</a>
     </p>
     """
 
@@ -1295,18 +1303,18 @@ def newsletter_subscribe():
     greeting_name = _first_name({"email": email, "name": name})
     headline = f"You're on the list, {html.escape(greeting_name)}! 🎉" if greeting_name else "You're on the list! 🎉"
     email_html = f"""
-    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-      <h1 style="color: #C0392B; font-size: 22px;">{headline}</h1>
+    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; background:{EMAIL_BG}; color:{EMAIL_TEXT}; padding: 32px 28px; border-radius: 12px;">
+      <h1 style="color: {EMAIL_ACCENT}; font-size: 22px;">{headline}</h1>
       <p style="font-size: 15px; line-height: 1.6;">
         Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips,
         cloud hosting guides, and EOS&reg; business insights straight to your inbox.
       </p>
       <p style="font-size: 15px; line-height: 1.6;">
         In the meantime, feel free to explore
-        <a href="https://www.optimumprimesolutions.co.ke" style="color: #C0392B;">our site</a>
-        or <a href="https://www.optimumprimesolutions.co.ke/contact#demo-form" style="color: #C0392B;">book a free demo</a>.
+        <a href="https://www.optimumprimesolutions.co.ke" style="color: {EMAIL_ACCENT};">our site</a>
+        or <a href="https://www.optimumprimesolutions.co.ke/contact#demo-form" style="color: {EMAIL_ACCENT};">book a free demo</a>.
       </p>
-      <p style="font-size: 13px; color: #888; margin-top: 32px;">
+      <p style="font-size: 13px; color: {EMAIL_TEXT_DIM}; margin-top: 32px;">
         Optimum Prime Solutions &middot; Ruiru, Kenya &middot; +254 116 246 074
       </p>
       {_email_footer(email)}
@@ -1446,13 +1454,14 @@ def notify_subscribers():
 
     def build_html(subscriber):
         name = _first_name(subscriber)
-        heading = f"Hi {html.escape(name)}, new on the blog: {html.escape(title)}" if name else f"New on the blog: {html.escape(title)}"
+        greeting = f'<p style="font-size:14px;color:{EMAIL_TEXT_DIM};margin:0 0 6px;">Hi {html.escape(name)},</p>' if name else ""
         return f"""
-        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-          <h1 style="color: #C0392B; font-size: 20px;">{heading}</h1>
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; background:{EMAIL_BG}; color:{EMAIL_TEXT}; padding: 32px 28px; border-radius: 12px;">
+          {greeting}
+          <h1 style="color: {EMAIL_ACCENT}; font-size: 20px; margin: 0 0 12px;">{html.escape(title)}</h1>
           <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
           <p style="margin: 24px 0;">
-            <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
+            <a href="{post_url}" style="background:{EMAIL_ACCENT};color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
           </p>
           {_email_footer(subscriber["email"])}
         </div>
@@ -1485,14 +1494,11 @@ def broadcast():
 
     def build_html(subscriber):
         name = _first_name(subscriber)
-        greeting = f'<h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(name)},</h1>' if name else ""
-        subject_style = "font-size: 15px; line-height: 1.6; font-weight: 600; margin: -4px 0 10px;" if name \
-            else "color: #C0392B; font-size: 20px; font-weight: 700; margin: 0 0 14px;"
-        subject_tag = "p" if name else "h1"
+        greeting = f'<p style="font-size:14px;color:{EMAIL_TEXT_DIM};margin:0 0 6px;">Hi {html.escape(name)},</p>' if name else ""
         return f"""
-        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; background:{EMAIL_BG}; color:{EMAIL_TEXT}; padding: 32px 28px; border-radius: 12px;">
           {greeting}
-          <{subject_tag} style="{subject_style}">{html.escape(subject)}</{subject_tag}>
+          <h1 style="color: {EMAIL_ACCENT}; font-size: 20px; margin: 0 0 14px;">{html.escape(subject)}</h1>
           {paragraphs}
           {_email_footer(subscriber["email"])}
         </div>
