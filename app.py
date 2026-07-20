@@ -263,6 +263,23 @@ def _email_footer(to_email: str) -> str:
     """
 
 
+def _greeting_name(subscriber: dict) -> str:
+    """
+    First name to use in an email greeting. Prefers a stored `name`; for
+    older subscribers who signed up before the name field existed, falls
+    back to a best-effort guess from the email's local part (e.g.
+    'jane.doe@x.com' -> 'Jane'). Never returns empty — worst case 'there'.
+    """
+    name = (subscriber.get("name") or "").strip()
+    if name:
+        return name.split()[0]
+    local = (subscriber.get("email") or "").split("@")[0]
+    local = re.sub(r"[._\-+0-9]+", " ", local).strip()
+    if local:
+        return local.split()[0].capitalize()
+    return "there"
+
+
 def _verify_resend_webhook(payload: bytes, headers: dict) -> bool:
     """
     Verify an inbound Resend webhook request using its Svix signing secret.
@@ -1260,6 +1277,7 @@ def newsletter_subscribe():
     """Save newsletter subscriber, email them a welcome message, and notify team on WhatsApp."""
     data = request.get_json(force=True, silent=True) or {}
     email = data.get("email", "").strip()
+    name  = (data.get("name") or "").strip()
 
     if not email:
         return jsonify({"error": "Email is required"}), 400
@@ -1269,16 +1287,19 @@ def newsletter_subscribe():
         subscriber_record = {
             "email": email,
             "subscribedAt": datetime.now(timezone.utc).isoformat(),
-            "status": "active"
+            "status": "active",
         }
+        if name:
+            subscriber_record["name"] = name
         requests.post(FIREBASE_NEWSLETTER_URL, json=subscriber_record, timeout=5)
     except Exception as e:
         print(f"Firebase newsletter save error: {e}")
 
     # ── Send congratulatory email to the subscriber ───────────────────────────
+    greeting = _greeting_name({"email": email, "name": name})
     email_html = f"""
     <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-      <h1 style="color: #C0392B; font-size: 22px;">You're on the list! 🎉</h1>
+      <h1 style="color: #C0392B; font-size: 22px;">You're on the list, {html.escape(greeting)}! 🎉</h1>
       <p style="font-size: 15px; line-height: 1.6;">
         Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips,
         cloud hosting guides, and EOS&reg; business insights straight to your inbox.
@@ -1300,7 +1321,8 @@ def newsletter_subscribe():
     try:
         body = (
             f"📧 *New Newsletter Subscriber — Optimum Prime Solutions*\n\n"
-            f"📨 *Email:* {email}\n"
+            + (f"👤 *Name:* {name}\n" if name else "")
+            + f"📨 *Email:* {email}\n"
             f"⏰ *Subscribed:* {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
             f"👉 Manage subscribers at: https://www.optimumprimesolutions.co.ke/admin"
         )
@@ -1355,40 +1377,44 @@ def unsubscribe():
     """, 200
 
 
-def _active_subscriber_emails() -> list:
-    """De-duplicated list of every subscriber whose status isn't 'unsubscribed'."""
+def _active_subscribers() -> list:
+    """De-duplicated {email, name} dicts for every subscriber whose status
+    isn't 'unsubscribed' — `name` may be '' for subscribers who signed up
+    before the name field existed; _greeting_name() handles that fallback."""
     subscribers = fetch_firebase(FIREBASE_NEWSLETTER_URL)
     seen = set()
-    emails = []
+    result = []
     for r in subscribers.values():
         if not isinstance(r, dict) or r.get("status", "active") != "active":
             continue
         addr = (r.get("email") or "").strip()
-        if addr and addr.lower() not in seen:
-            seen.add(addr.lower())
-            emails.append(addr)
-    return emails
+        key = addr.lower()
+        if addr and key not in seen:
+            seen.add(key)
+            result.append({"email": addr, "name": (r.get("name") or "").strip()})
+    return result
 
 
 def _broadcast_to_subscribers(subject: str, build_html) -> dict:
     """
-    Send `subject` to every active subscriber. `build_html(email) -> str`
-    builds each recipient's body so each one gets their own unsubscribe
-    link. Shared by /notify-subscribers and /broadcast. Batches in groups
-    of 100 (Resend's per-call limit); one bad address only fails its own
-    chunk, not the whole send.
+    Send `subject` to every active subscriber. `build_html(subscriber) -> str`
+    receives the {email, name} dict so it can personalize the greeting and
+    still build each recipient's own unsubscribe link. Shared by
+    /notify-subscribers and /broadcast. Batches in groups of 100 (Resend's
+    per-call limit); one bad address only fails its own chunk, not the
+    whole send.
     """
-    active_emails = _active_subscriber_emails()
-    if not active_emails:
+    active = _active_subscribers()
+    if not active:
         return {"success": True, "sent": 0, "total_subscribers": 0}
 
     sent = 0
     errors = []
-    for i in range(0, len(active_emails), 100):
-        chunk = active_emails[i:i + 100]
+    for i in range(0, len(active), 100):
+        chunk = active[i:i + 100]
         batch_payload = [
-            {"from": RESEND_FROM, "to": [addr], "subject": subject, "html": build_html(addr)}
-            for addr in chunk
+            {"from": RESEND_FROM, "to": [s["email"]], "subject": subject, "html": build_html(s)}
+            for s in chunk
         ]
         result = _send_email_batch(batch_payload)
         if result.get("success"):
@@ -1399,7 +1425,7 @@ def _broadcast_to_subscribers(subject: str, build_html) -> dict:
     return {
         "success": len(errors) == 0,
         "sent": sent,
-        "total_subscribers": len(active_emails),
+        "total_subscribers": len(active),
         "errors": errors,
     }
 
@@ -1421,15 +1447,15 @@ def notify_subscribers():
 
     post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
 
-    def build_html(addr):
+    def build_html(subscriber):
         return f"""
         <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-          <h1 style="color: #C0392B; font-size: 20px;">New on the blog: {html.escape(title)}</h1>
+          <h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(_greeting_name(subscriber))}, new on the blog: {html.escape(title)}</h1>
           <p style="font-size: 15px; line-height: 1.6;">{html.escape(excerpt)}</p>
           <p style="margin: 24px 0;">
             <a href="{post_url}" style="background:#C0392B;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-size:14px;">Read the post</a>
           </p>
-          {_email_footer(addr)}
+          {_email_footer(subscriber["email"])}
         </div>
         """
 
@@ -1458,12 +1484,13 @@ def broadcast():
         for p in body.split("\n\n") if p.strip()
     )
 
-    def build_html(addr):
+    def build_html(subscriber):
         return f"""
         <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; color: #1A1A2E;">
-          <h1 style="color: #C0392B; font-size: 20px;">{html.escape(subject)}</h1>
+          <h1 style="color: #C0392B; font-size: 20px;">Hi {html.escape(_greeting_name(subscriber))},</h1>
+          <p style="font-size: 15px; line-height: 1.6; font-weight: 600; margin: -4px 0 10px;">{html.escape(subject)}</p>
           {paragraphs}
-          {_email_footer(addr)}
+          {_email_footer(subscriber["email"])}
         </div>
         """
 
