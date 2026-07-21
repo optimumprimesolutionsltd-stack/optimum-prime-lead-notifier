@@ -64,6 +64,8 @@ FIREBASE_LEADS_URL       = f"{FIREBASE_BASE}/leads.json"
 FIREBASE_NEWSLETTER_BASE = f"{FIREBASE_BASE}/newsletter_subscribers"
 FIREBASE_NEWSLETTER_URL  = f"{FIREBASE_NEWSLETTER_BASE}.json"
 FIREBASE_WA_CONVOS_BASE  = f"{FIREBASE_BASE}/whatsapp_conversations"
+FIREBASE_BLOGS_BASE      = f"{FIREBASE_BASE}/siteData/blogs"
+FIREBASE_BLOGS_URL       = f"{FIREBASE_BLOGS_BASE}.json"
 
 # Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
 # Messages are SENT FROM +254727209720 (the registered API number)
@@ -1435,21 +1437,11 @@ def _broadcast_to_subscribers(subject: str, build_html) -> dict:
     }
 
 
-@app.route("/notify-subscribers", methods=["POST"])
-def notify_subscribers():
+def _notify_subscribers_of_post(title: str, excerpt: str, slug: str) -> dict:
     """
-    Email every active newsletter subscriber about a new blog post.
-    Expects: { "title": "...", "excerpt": "...", "slug": "..." }
-    Triggered manually via the "Notify Subscribers" button in the admin
-    Blog editor — never fires automatically on save/edit.
+    Shared by the manual /notify-subscribers route and the scheduled-posts
+    background check — emails every active subscriber about a blog post.
     """
-    data    = request.get_json(force=True, silent=True) or {}
-    title   = (data.get("title") or "").strip()
-    excerpt = (data.get("excerpt") or "").strip()
-    slug    = (data.get("slug") or "").strip()
-    if not title or not slug:
-        return jsonify({"error": "title and slug are required"}), 400
-
     post_url = f"https://www.optimumprimesolutions.co.ke/blog/{slug}"
 
     def build_html(subscriber):
@@ -1467,7 +1459,25 @@ def notify_subscribers():
         </div>
         """
 
-    return jsonify(_broadcast_to_subscribers(f"New post: {title}", build_html))
+    return _broadcast_to_subscribers(f"New post: {title}", build_html)
+
+
+@app.route("/notify-subscribers", methods=["POST"])
+def notify_subscribers():
+    """
+    Email every active newsletter subscriber about a new blog post.
+    Expects: { "title": "...", "excerpt": "...", "slug": "..." }
+    Triggered manually via the "Notify Subscribers Now" button in the
+    admin Blog editor — never fires automatically on save/edit.
+    """
+    data    = request.get_json(force=True, silent=True) or {}
+    title   = (data.get("title") or "").strip()
+    excerpt = (data.get("excerpt") or "").strip()
+    slug    = (data.get("slug") or "").strip()
+    if not title or not slug:
+        return jsonify({"error": "title and slug are required"}), 400
+
+    return jsonify(_notify_subscribers_of_post(title, excerpt, slug))
 
 
 @app.route("/broadcast", methods=["POST"])
@@ -1880,7 +1890,62 @@ def send_reminders():
     })
 
 
-# ── Self-scheduling: call /send-reminders every 15 minutes ────────────────────
+@app.route("/send-scheduled-posts", methods=["POST", "GET"])
+def send_scheduled_posts():
+    """
+    Called periodically (every ~10 min) by a background thread. Scans
+    siteData.blogs for posts with a `notifyAt` timestamp (set via the
+    admin Blog editor's "Auto-send to subscribers on" field) that has
+    passed and aren't already `notified`, emails each one out via the
+    same path as the manual "Notify Subscribers Now" button, then PATCHes
+    that post's `notified` flag so it's never sent twice.
+    """
+    blogs = fetch_firebase(FIREBASE_BLOGS_URL)
+    if not isinstance(blogs, list):
+        return jsonify({"success": True, "checked_at": datetime.now(timezone.utc).isoformat(), "posts_sent": []})
+
+    now = datetime.now(timezone.utc)
+    posts_sent = []
+
+    for i, post in enumerate(blogs):
+        if not isinstance(post, dict) or post.get("notified"):
+            continue
+        notify_at = post.get("notifyAt")
+        if not notify_at:
+            continue
+        try:
+            scheduled = datetime.fromisoformat(notify_at.replace("Z", "+00:00"))
+            if scheduled.tzinfo is None:
+                scheduled = scheduled.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if scheduled > now:
+            continue  # not due yet
+
+        title = (post.get("title") or "").strip()
+        excerpt = (post.get("excerpt") or "").strip()
+        slug = (post.get("slug") or "").strip()
+        if not title or not slug:
+            print(f"[Scheduled posts] Skipping post at index {i} — missing title or slug")
+            continue
+
+        result = _notify_subscribers_of_post(title, excerpt, slug)
+
+        try:
+            requests.patch(f"{FIREBASE_BLOGS_BASE}/{i}.json", json={"notified": True}, timeout=5)
+        except Exception as e:
+            print(f"[Scheduled posts] Failed to mark '{title}' as notified: {e}")
+
+        posts_sent.append({"title": title, "sent": result.get("sent", 0), "total_subscribers": result.get("total_subscribers", 0)})
+
+    return jsonify({
+        "success": True,
+        "checked_at": now.isoformat(),
+        "posts_sent": posts_sent,
+    })
+
+
+# ── Self-scheduling: call /send-reminders and /send-scheduled-posts periodically ──
 import threading
 
 def _reminder_loop():
@@ -1893,8 +1958,21 @@ def _reminder_loop():
         except Exception:
             pass
 
+def _scheduled_posts_loop():
+    """Background thread: hits /send-scheduled-posts every 10 minutes."""
+    import time
+    while True:
+        time.sleep(10 * 60)  # wait 10 minutes
+        try:
+            requests.post(f"{SERVICE_URL}/send-scheduled-posts", timeout=30)
+        except Exception:
+            pass
+
 _reminder_thread = threading.Thread(target=_reminder_loop, daemon=True)
 _reminder_thread.start()
+
+_scheduled_posts_thread = threading.Thread(target=_scheduled_posts_loop, daemon=True)
+_scheduled_posts_thread.start()
 
 
 if __name__ == "__main__":
