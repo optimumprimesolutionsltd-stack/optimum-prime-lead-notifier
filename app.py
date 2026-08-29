@@ -122,8 +122,8 @@ def _wa_send_template(to: str, template_name: str, params: list, language: str =
     """
     Send an approved WhatsApp message template via Meta Cloud API.
     `params` is an ordered list of strings filling {{1}}, {{2}}, ... in the template body.
-    Required for business-initiated messages once the app is published (outside the
-    24h customer-service session window, Meta rejects free-form text).
+    Required for every business-initiated message: outside the 24h window that a
+    customer's own message opens, Meta accepts free text and then drops it.
     """
     to_clean = to.lstrip("+")
     payload = {
@@ -152,12 +152,53 @@ def _wa_send_template(to: str, template_name: str, params: list, language: str =
             _log_wa_message(to_clean, "out", body_preview, name=name, message_id=msg_id)
             return {"success": True, "message_id": msg_id, "error": ""}
         else:
-            err = data.get("error", {}).get("message", str(data))
+            error = data.get("error", {}) or {}
+            err = error.get("message", str(data))
             print(f"[Meta WA] Template send failed to {to}: {err}")
-            return {"success": False, "message_id": "", "error": err}
+            return {"success": False, "message_id": "", "error": err, "code": error.get("code")}
     except Exception as e:
         print(f"[Meta WA] Exception sending template to {to}: {e}")
-        return {"success": False, "message_id": "", "error": str(e)}
+        return {"success": False, "message_id": "", "error": str(e), "code": None}
+
+
+# Meta error codes meaning "this template can't be used" — it doesn't exist, isn't
+# approved yet, was paused or deleted, or the parameters don't match its body.
+# Anything else (a bad token, a blocked number) is a real failure worth reporting.
+TEMPLATE_UNUSABLE_CODES = {132000, 132001, 132005, 132007, 132012, 132015, 132016, 132068, 132069}
+
+
+def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, name: str = "") -> dict:
+    """
+    Send a business-initiated WhatsApp message: one the customer or team member
+    didn't ask for in the last 24 hours.
+
+    Meta only accepts free text inside the 24-hour window that opens when someone
+    messages us. Outside it, free text is accepted by the API (HTTP 200, message
+    id and all) and then silently dropped, reported later on the status webhook as
+    error 131047. So every one of these has to go out as an approved template.
+
+    While a template is still awaiting approval, this falls back to the free-text
+    body — that at least reaches anyone inside an open window, which is what the
+    old behaviour managed, and the log line says why it happened.
+    """
+    result = _wa_send_template(to, template_name, _template_params(params), name=name)
+    if result["success"] or result.get("code") not in TEMPLATE_UNUSABLE_CODES:
+        return result
+    print(f"[Meta WA] Template '{template_name}' unusable ({result['error']}) — "
+          f"falling back to free text for {to}, which only delivers inside an open 24h window")
+    return _wa_send(to, fallback_body, name=name)
+
+
+def _template_params(params: list) -> list:
+    """
+    Meta rejects template parameters containing newlines or tabs, and caps their
+    length. Review text and error messages routinely carry both.
+    """
+    cleaned = []
+    for p in params:
+        text = " ".join(str(p if p not in (None, "") else "not provided").split())
+        cleaned.append(text[:900])
+    return cleaned
 
 
 def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = "", message_id: str = "", force: bool = False) -> None:
@@ -469,14 +510,15 @@ def notify_team(lead: dict) -> list:
         print(f"[Team email] error: {e}")
 
     if not is_webinar:
-        # Uses the approved `new_lead_alert` template (required for business-initiated
-        # sends once the app is published — free text would be rejected outside a session)
+        # Uses the approved `new_lead_alert` template — free text to these numbers is
+        # dropped unless someone on the team messaged us in the last 24 hours.
         for to in TEAM_NUMBERS:
             r = _wa_send_template(to, "new_lead_alert", [name, company, phone, interest])
             results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
         return results
 
-    # Webinar registrations: `webinar_registration_alert` template not yet approved — free text for now
+    # Webinar registrations use the `webinar_registration_alert` template, falling back
+    # to this richer free-text body while that template is still awaiting approval.
     count = get_registration_count()
     count_line = f"📊 *Total registrations so far:* {count}\n" if count != -1 else "📊 *Total registrations:* (unavailable)\n"
     header = "🔔 *New Webinar Registration — Optimum Prime Solutions*"
@@ -502,7 +544,9 @@ def notify_team(lead: dict) -> list:
     )
 
     for to in TEAM_NUMBERS:
-        r = _wa_send(to, body)
+        r = _wa_notify(to, "webinar_registration_alert",
+                       [name, company, phone, str(count) if count != -1 else "unavailable"],
+                       body)
         results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
     return results
 
@@ -522,14 +566,16 @@ def reply_to_lead(lead: dict) -> dict:
     name     = lead.get("name", "there")
     interest = lead.get("interest", "TallyPrime")
 
-    # Custom message (e.g. webinar confirmation) takes priority — sent as free text since
-    # it's arbitrary per-call content, not covered by a fixed approved template
+    # Custom message (e.g. a webinar confirmation from send_webinar_invite.py) takes
+    # priority. It stays free text because the content is arbitrary per call, so no fixed
+    # template covers it — which means it only reaches recipients inside an open 24h
+    # window. Bulk outreach through these scripts needs its own approved template.
     custom_msg = lead.get("confirmation_message", "")
     if custom_msg:
         r = _wa_send(phone, custom_msg)
     else:
-        # Uses the approved `lead_confirmation` template (required for business-initiated
-        # sends once the app is published — free text would be rejected outside a session)
+        # Uses the approved `lead_confirmation` template — free text to a lead who has
+        # not messaged us in the last 24 hours is dropped.
         r = _wa_send_template(phone, "lead_confirmation", [name, interest])
 
     if r["success"]:
@@ -885,7 +931,10 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        _wa_send(team_num, office_body)
+                        _wa_notify(team_num, "team_alert",
+                                   [f"{req_title.lower()} request", name, phone,
+                                    f"{display_date} at {display_time} EAT, pending confirmation"],
+                                   office_body)
                 except Exception as e:
                     print(f'Office notify error: {e}')
 
@@ -903,7 +952,11 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         f'You will receive a confirmation message with all the details once approved.\n\n'
                         f'Questions? Call or WhatsApp us: +254 116 246 074'
                     )
-                    _wa_send(norm_phone, client_body)
+                    _wa_notify(norm_phone, "booking_received",
+                               [name,
+                                "a consultation" if request_type == "consultation" else "a TallyPrime demo",
+                                display_date, display_time],
+                               client_body)
                 except Exception as e:
                     print(f'Client notify error: {e}')
 
@@ -938,7 +991,9 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        _wa_send(team_num, alert)
+                        _wa_notify(team_num, "team_alert",
+                                   ["lead handoff", name, phone or "not captured", interest],
+                                   alert)
                 except Exception:
                     pass
 
@@ -980,7 +1035,9 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         f'👉 Admin panel: https://www.optimumprimesolutions.co.ke/admin'
                     )
                     for team_num in TEAM_NUMBERS:
-                        _wa_send(team_num, alert)
+                        _wa_notify(team_num, "team_alert",
+                                   ["escalation", name, phone or "not captured", reason],
+                                   alert)
                 except Exception:
                     pass
 
@@ -1047,24 +1104,31 @@ def meta_status_webhook():
                     status    = status_obj.get("status", "")
                     to_number = status_obj.get("recipient_id", "")
                     msg_id    = status_obj.get("id", "")
-                    # Skip alerting on failures where the ORIGINAL failed message was sent
-                    # to a team number (i.e. it was one of our own alerts). Otherwise a
-                    # failed alert triggers another alert, which can also fail, forever —
-                    # an infinite feedback loop.
                     is_team_recipient = to_number.lstrip("+") in {n.lstrip("+") for n in TEAM_NUMBERS}
-                    if status in {"failed", "undelivered"} and not is_team_recipient:
+                    if status in {"failed", "undelivered"}:
                         errors = status_obj.get("errors", [{}])
                         err_msg = errors[0].get("message", "Unknown error") if errors else "Unknown error"
-                        alert_body = (
-                            f"⚠️ *WhatsApp Delivery Failed*\n\n"
-                            f"📵 *Status:* {status.upper()}\n"
-                            f"📞 *To:* +{to_number}\n"
-                            f"🔑 *Message ID:* {msg_id}\n"
-                            f"💬 *Error:* {err_msg}\n\n"
-                            f"Check the admin panel for details."
-                        )
-                        for team_num in TEAM_NUMBERS:
-                            _wa_send(team_num, alert_body)
+                        # Always log. Meta accepts a send with HTTP 200 and only fails it
+                        # here, asynchronously, so without this line a failed message
+                        # leaves no trace anywhere.
+                        print(f"[Meta WA] Delivery {status} to +{to_number} ({msg_id}): {err_msg}")
+                        # Only ALERT when the failed message went to a customer. Alerting
+                        # the team about a failed team alert is a feedback loop: that alert
+                        # can fail too, alerting again, forever.
+                        if not is_team_recipient:
+                            alert_body = (
+                                f"⚠️ *WhatsApp Delivery Failed*\n\n"
+                                f"📵 *Status:* {status.upper()}\n"
+                                f"📞 *To:* +{to_number}\n"
+                                f"🔑 *Message ID:* {msg_id}\n"
+                                f"💬 *Error:* {err_msg}\n\n"
+                                f"Check the admin panel for details."
+                            )
+                            for team_num in TEAM_NUMBERS:
+                                _wa_notify(team_num, "team_alert",
+                                           ["delivery failure", f"+{to_number}",
+                                            f"+{to_number}", err_msg],
+                                           alert_body)
 
                 # Incoming customer messages — handled by Zawadi, the AI assistant
                 contacts = value.get("contacts", [])
@@ -1100,7 +1164,11 @@ def meta_status_webhook():
                             f"WhatsApp tab anytime to see the conversation or jump in yourself."
                         )
                         for team_num in TEAM_NUMBERS:
-                            _wa_send(team_num, alert)
+                            _wa_notify(team_num, "team_alert",
+                                       ["WhatsApp conversation", contact_name or "Unknown",
+                                        f"+{from_number}",
+                                        "Zawadi is replying - open the WhatsApp tab to take over"],
+                                       alert)
                         try:
                             requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"everContacted": True}, timeout=5)
                         except Exception:
@@ -1117,7 +1185,11 @@ def meta_status_webhook():
                             f"in the admin panel's WhatsApp tab or on WhatsApp."
                         )
                         for team_num in TEAM_NUMBERS:
-                            _wa_send(team_num, alert)
+                            _wa_notify(team_num, "team_alert",
+                                       ["WhatsApp attachment", contact_name or "Unknown",
+                                        f"+{from_number}",
+                                        f"{msg_type} message - Zawadi cannot read it"],
+                                       alert)
                         continue
 
                     if bot_paused:
@@ -1269,7 +1341,10 @@ def new_review():
 
     results = []
     for to in TEAM_NUMBERS:
-        r = _wa_send(to, body)
+        r = _wa_notify(to, "team_alert",
+                       ["review", name, "no contact given",
+                        f"{rating}/5 from {company or 'no company given'} - {text}"],
+                       body)
         results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     return jsonify({
@@ -1336,7 +1411,10 @@ def newsletter_subscribe():
         )
         results = []
         for to in TEAM_NUMBERS:
-            r = _wa_send(to, body)
+            r = _wa_notify(to, "team_alert",
+                           ["newsletter signup", name or "Not provided", email,
+                            "Subscribed through the website"],
+                           body)
             results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
     except Exception as e:
         print(f"Newsletter notification error: {e}")
@@ -1590,7 +1668,10 @@ def book_demo():
 
     # Send to both office numbers
     for to in TEAM_NUMBERS:
-        r = _wa_send(to, office_body)
+        r = _wa_notify(to, "team_alert",
+                       ["demo booking", client_name, client_phone or "not provided",
+                        f"{display_date} at {demo_time} EAT, {demo_type_label}"],
+                       office_body)
         results["office"].append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     # ── Team member notification ─────────────────────────────────────────────
@@ -1623,7 +1704,10 @@ def book_demo():
             team_body += f"\n📝 *Notes:* {demo_notes}\n"
         team_body += "\n_Please confirm with the client 24 hours before the demo._"
 
-        r = _wa_send(norm_phone, team_body)
+        r = _wa_notify(norm_phone, "team_alert",
+                       ["demo assignment", client_name, client_phone or "not provided",
+                        f"{display_date} at {demo_time} EAT, {demo_type_label}"],
+                       team_body)
         results["team"].append({"to": norm_phone, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
     send_team_notification(team_name, team_phone)
@@ -1642,8 +1726,8 @@ def book_demo():
         elif not norm_client.startswith("+"):
             norm_client = "+254" + norm_client
 
-        # Uses the approved `demo_confirmation` template (required for business-initiated
-        # sends once the app is published — free text would be rejected outside a session).
+        # Uses the approved `demo_confirmation` template — free text to a client who has
+        # not messaged us in the last 24 hours is dropped.
         # Covers both new bookings and reschedules; the Meet link / Google Calendar link
         # and reschedule-specific wording from the old free-text version are dropped since
         # the approved template body is fixed — client can still get the Meet link by
@@ -1836,7 +1920,10 @@ def send_reminders():
                 f"\n✅ Please confirm the client is ready and join on time.\n"
                 f"👉 *Admin panel:* https://www.optimumprimesolutions.co.ke/admin"
             )
-            r = _wa_send(norm, body)
+            r = _wa_notify(norm, "team_alert",
+                           ["demo reminder", client_name, client_phone or "not provided",
+                            f"{display_date} at {scheduled_time} EAT, {demo_type_label}"],
+                           body)
             reminder_results["team"].append({"to": norm, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
         send_team_reminder(team_name, team_phone)
@@ -1868,7 +1955,14 @@ def send_reminders():
                 f"*+254 116 246 074* if you need to reschedule.\n\n"
                 f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
             )
-            r = _wa_send(norm_client, client_body)
+            reminder_detail = (
+                f"Your Google Meet link: {meet_link}" if (demo_type == "online" and meet_link)
+                else (f"Location: {demo_location}" if demo_location
+                      else "Our team will meet you at the scheduled time.")
+            )
+            r = _wa_notify(norm_client, "demo_reminder",
+                           [client_name, display_date, scheduled_time, reminder_detail],
+                           client_body)
             reminder_results["client_msg"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
         # ── Mark reminderSent in Firebase ─────────────────────────────────────
