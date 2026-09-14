@@ -1126,9 +1126,12 @@ def meta_status_webhook():
                                 f"Check the admin panel for details."
                             )
                             for team_num in TEAM_NUMBERS:
-                                _wa_notify(team_num, "team_alert",
-                                           ["delivery failure", f"+{to_number}",
-                                            f"+{to_number}", err_msg],
+                                # delivery_failed_alert: Status {{1}} · To {{2}} · Error {{3}} —
+                                # a purpose-built template that already existed for this, unlike
+                                # the generic "team_alert" this used to call (which was never
+                                # created in Meta and only ever reached the free-text fallback).
+                                _wa_notify(team_num, "delivery_failed_alert",
+                                           [status.upper(), f"+{to_number}", err_msg],
                                            alert_body)
 
                 # Incoming customer messages — handled by Zawadi, the AI assistant
@@ -1165,9 +1168,9 @@ def meta_status_webhook():
                             f"WhatsApp tab anytime to see the conversation or jump in yourself."
                         )
                         for team_num in TEAM_NUMBERS:
-                            _wa_notify(team_num, "team_alert",
-                                       ["WhatsApp conversation", contact_name or "Unknown",
-                                        f"+{from_number}",
+                            # whatsapp_message_alert: From {{1}} · Phone {{2}} · Message {{3}}
+                            _wa_notify(team_num, "whatsapp_message_alert",
+                                       [contact_name or "Unknown", f"+{from_number}",
                                         "Zawadi is replying - open the WhatsApp tab to take over"],
                                        alert)
                         try:
@@ -1186,10 +1189,11 @@ def meta_status_webhook():
                             f"in the admin panel's WhatsApp tab or on WhatsApp."
                         )
                         for team_num in TEAM_NUMBERS:
-                            _wa_notify(team_num, "team_alert",
-                                       ["WhatsApp attachment", contact_name or "Unknown",
-                                        f"+{from_number}",
-                                        f"{msg_type} message - Zawadi cannot read it"],
+                            # Same template as the first-contact alert above — this is also
+                            # fundamentally "a WhatsApp message arrived", just one Zawadi can't read.
+                            _wa_notify(team_num, "whatsapp_message_alert",
+                                       [contact_name or "Unknown", f"+{from_number}",
+                                        f"Sent a {msg_type} - Zawadi can't read it, check WhatsApp directly"],
                                        alert)
                         continue
 
@@ -1342,9 +1346,11 @@ def new_review():
 
     results = []
     for to in TEAM_NUMBERS:
-        r = _wa_notify(to, "team_alert",
-                       ["review", name, "no contact given",
-                        f"{rating}/5 from {company or 'no company given'} - {text}"],
+        # new_review_alert_: Name {{1}} · Company {{2}} · Rating {{3}} · Review text {{4}} —
+        # a template already built for exactly this, unlike the generic "team_alert" this
+        # used to call, which was never created and only ever reached the free-text fallback.
+        r = _wa_notify(to, "new_review_alert_",
+                       [name, company or "Not provided", str(rating), text or "No comment left"],
                        body)
         results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
@@ -1939,9 +1945,12 @@ def send_reminders():
                 f"\n✅ Please confirm the client is ready and join on time.\n"
                 f"👉 *Admin panel:* https://www.optimumprimesolutions.co.ke/admin"
             )
-            r = _wa_notify(norm, "team_alert",
-                           ["demo reminder", client_name, client_phone or "not provided",
-                            f"{display_date} at {scheduled_time} EAT, {demo_type_label}"],
+            # team_demo_reminder: Client {{1}} · Company {{2}} · Time {{3}} · Details {{4}} —
+            # a template already built for exactly this 2-hour reminder, unlike the generic
+            # "team_alert" this used to call, which was never created in Meta.
+            details = meet_link if (demo_type == "online" and meet_link) else (demo_location or "On-site")
+            r = _wa_notify(norm, "team_demo_reminder",
+                           [client_name, client_company or "Not provided", scheduled_time, details],
                            body)
             reminder_results["team"].append({"to": norm, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
