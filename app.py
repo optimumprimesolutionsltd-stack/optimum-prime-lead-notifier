@@ -5,6 +5,7 @@ Optimum Prime Solutions — Lead Auto-Reply & Webinar Notification System
 
 import os
 import re
+import json
 import html
 import csv
 import io
@@ -17,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from openai import OpenAI
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # ── Meta WhatsApp Cloud API config ───────────────────────────────────────────
 # Set these in Render environment variables:
@@ -66,6 +69,49 @@ FIREBASE_NEWSLETTER_URL  = f"{FIREBASE_NEWSLETTER_BASE}.json"
 FIREBASE_WA_CONVOS_BASE  = f"{FIREBASE_BASE}/whatsapp_conversations"
 FIREBASE_BLOGS_BASE      = f"{FIREBASE_BASE}/siteData/blogs"
 FIREBASE_BLOGS_URL       = f"{FIREBASE_BLOGS_BASE}.json"
+
+# database.rules.json locked the RTDB down on 2026-08-06 (commit c630f3dd in the
+# website repo, "Lock down the Realtime Database and move leads out of
+# siteData") — reads/writes to /leads, /whatsapp_conversations, /crm etc. now
+# require auth != null. Before that, this file's plain unauthenticated
+# requests.post/get/patch calls worked because the database had no rules at
+# all. Nobody updated this separate backend at the time, so every server-side
+# Firebase write here (Zawadi bookings, Zawadi handoffs, the WhatsApp
+# conversation log) has been silently rejected ever since — caught by a bare
+# except and printed to the Render logs, never surfaced anywhere a human would
+# see it. A service account restores write access the same way Cloud
+# Functions / the Admin SDK would: it isn't bound by database.rules.json at
+# all, so it works regardless of which uids that file happens to allow.
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+_firebase_credentials = None
+
+def _firebase_auth_headers() -> dict:
+    """
+    Bearer token for a Firebase service account, to attach to every direct
+    Firebase REST call in this file. Returns {} (no Authorization header) if
+    FIREBASE_SERVICE_ACCOUNT_JSON isn't set, so a misconfigured env doesn't
+    crash the request outright — it just gets denied by the rules, same as
+    before this fix, with the error still visible in the response.
+    """
+    global _firebase_credentials
+    if not FIREBASE_SERVICE_ACCOUNT_JSON:
+        return {}
+    try:
+        if _firebase_credentials is None:
+            info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+            _firebase_credentials = service_account.Credentials.from_service_account_info(
+                info,
+                scopes=[
+                    "https://www.googleapis.com/auth/firebase.database",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                ],
+            )
+        if not _firebase_credentials.valid:
+            _firebase_credentials.refresh(GoogleAuthRequest())
+        return {"Authorization": f"Bearer {_firebase_credentials.token}"}
+    except Exception as e:
+        print(f"[Firebase auth] Could not get service account token: {e}")
+        return {}
 
 # Office/admin numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API).
 # Every "new lead", "demo booked", "review submitted", etc. alert in this file
@@ -222,7 +268,7 @@ def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = ""
             "text": text,
             "timestamp": now,
             "messageId": message_id,
-        }, timeout=5)
+        }, headers=_firebase_auth_headers(), timeout=5)
         meta = {
             "phone": f"+{phone_digits}",
             "lastMessage": text,
@@ -232,7 +278,7 @@ def _log_wa_message(phone_digits: str, direction: str, text: str, name: str = ""
         }
         if name:
             meta["name"] = name
-        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{phone_digits}/meta.json", json=meta, timeout=5)
+        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{phone_digits}/meta.json", json=meta, headers=_firebase_auth_headers(), timeout=5)
     except Exception as e:
         print(f"[WA conversation log] error: {e}")
 
@@ -426,7 +472,7 @@ def format_date_display(date_str: str) -> str:
 
 def get_registration_count() -> int:
     try:
-        resp = requests.get(FIREBASE_WEBINAR_URL, timeout=5)
+        resp = requests.get(FIREBASE_WEBINAR_URL, headers=_firebase_auth_headers(), timeout=5)
         data = resp.json()
         return len(data) if data and isinstance(data, dict) else 0
     except Exception:
@@ -434,7 +480,7 @@ def get_registration_count() -> int:
 
 def fetch_firebase(url: str) -> dict:
     try:
-        resp = requests.get(url, timeout=8)
+        resp = requests.get(url, headers=_firebase_auth_headers(), timeout=8)
         data = resp.json()
         return data if isinstance(data, dict) and "error" not in data else {}
     except Exception:
@@ -923,7 +969,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         'message':     f'Preferred: {display_date} at {display_time} ({demo_type}) — {"Consultation" if request_type == "consultation" else "Demo"}',
                         'createdAt':   datetime.now(timezone.utc).isoformat(),
                     }
-                    requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
+                    requests.post(FIREBASE_LEADS_URL, json=lead_record, headers=_firebase_auth_headers(), timeout=5)
                 except Exception as e:
                     print(f'Firebase save error: {e}')
 
@@ -1018,7 +1064,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         'status':    'New',
                         'createdAt': datetime.now(timezone.utc).isoformat(),
                     }
-                    requests.post(FIREBASE_LEADS_URL, json=lead_record, timeout=5)
+                    requests.post(FIREBASE_LEADS_URL, json=lead_record, headers=_firebase_auth_headers(), timeout=5)
                 except Exception:
                     pass
 
@@ -1159,7 +1205,7 @@ def meta_status_webhook():
                     # Fetch conversation state BEFORE logging this message, so history
                     # doesn't double up when we build it for Gemini below.
                     try:
-                        existing_convo = requests.get(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}.json", timeout=5).json() or {}
+                        existing_convo = requests.get(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}.json", headers=_firebase_auth_headers(), timeout=5).json() or {}
                     except Exception:
                         existing_convo = {}
                     existing_meta = existing_convo.get("meta") or {}
@@ -1185,7 +1231,7 @@ def meta_status_webhook():
                                         "Zawadi is replying - open the WhatsApp tab to take over"],
                                        alert)
                         try:
-                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"everContacted": True}, timeout=5)
+                            requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{from_number}/meta.json", json={"everContacted": True}, headers=_firebase_auth_headers(), timeout=5)
                         except Exception:
                             pass
 
@@ -1253,7 +1299,7 @@ def whatsapp_reply():
     norm_phone = normalize_phone(phone)
     result = _wa_send(norm_phone, message, force_log=True)
     try:
-        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{norm_phone.lstrip('+')}/meta.json", json={"botPaused": True}, timeout=5)
+        requests.patch(f"{FIREBASE_WA_CONVOS_BASE}/{norm_phone.lstrip('+')}/meta.json", json={"botPaused": True}, headers=_firebase_auth_headers(), timeout=5)
     except Exception:
         pass
     return jsonify(result)
@@ -1391,7 +1437,7 @@ def newsletter_subscribe():
         }
         if name:
             subscriber_record["name"] = name
-        requests.post(FIREBASE_NEWSLETTER_URL, json=subscriber_record, timeout=5)
+        requests.post(FIREBASE_NEWSLETTER_URL, json=subscriber_record, headers=_firebase_auth_headers(), timeout=5)
     except Exception as e:
         print(f"Firebase newsletter save error: {e}")
 
@@ -1466,7 +1512,7 @@ def unsubscribe():
     for key, r in subscribers.items():
         if isinstance(r, dict) and r.get("email", "").strip().lower() == email:
             try:
-                requests.patch(f"{FIREBASE_NEWSLETTER_BASE}/{key}.json", json={"status": "unsubscribed"}, timeout=5)
+                requests.patch(f"{FIREBASE_NEWSLETTER_BASE}/{key}.json", json={"status": "unsubscribed"}, headers=_firebase_auth_headers(), timeout=5)
                 updated += 1
             except Exception as e:
                 print(f"[Unsubscribe] Firebase patch error: {e}")
@@ -1790,7 +1836,7 @@ def book_demo():
             "status": "scheduled",
         }
         firebase_demos_url = f"{FIREBASE_BASE}/booked_demos.json"
-        requests.post(firebase_demos_url, json=booking_record, timeout=5)
+        requests.post(firebase_demos_url, json=booking_record, headers=_firebase_auth_headers(), timeout=5)
     except Exception:
         pass
 
@@ -2007,7 +2053,7 @@ def send_reminders():
         # ── Mark reminderSent in Firebase ─────────────────────────────────────
         try:
             patch_url = f"{FIREBASE_BASE}/leads/{lead_id}.json"
-            requests.patch(patch_url, json={"reminderSent": True}, timeout=5)
+            requests.patch(patch_url, json={"reminderSent": True}, headers=_firebase_auth_headers(), timeout=5)
         except Exception:
             pass
 
@@ -2066,7 +2112,7 @@ def send_scheduled_posts():
         result = _notify_subscribers_of_post(title, excerpt, slug)
 
         try:
-            requests.patch(f"{FIREBASE_BLOGS_BASE}/{i}.json", json={"notified": True}, timeout=5)
+            requests.patch(f"{FIREBASE_BLOGS_BASE}/{i}.json", json={"notified": True}, headers=_firebase_auth_headers(), timeout=5)
         except Exception as e:
             print(f"[Scheduled posts] Failed to mark '{title}' as notified: {e}")
 
