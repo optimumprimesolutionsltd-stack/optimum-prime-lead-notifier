@@ -70,10 +70,12 @@ FIREBASE_BLOGS_URL       = f"{FIREBASE_BLOGS_BASE}.json"
 # Office/admin numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API).
 # Every "new lead", "demo booked", "review submitted", etc. alert in this file
 # goes to both of these. Messages are SENT FROM +254727209720 (the registered
-# Meta API number) — it is also one of the two numbers alerts are DELIVERED TO.
+# Meta API number) — a number can't receive Cloud API messages sent from
+# itself (confirmed live: every send to it failed with Meta error #100,
+# "Invalid parameter"), so it can never be one of the two recipients here.
 TEAM_NUMBERS = [
+    "+254758449475",
     "+254116246074",
-    "+254727209720",
 ]
 
 SERVICE_URL = os.environ.get("SERVICE_URL", "https://optimum-prime-lead-notifier.onrender.com")

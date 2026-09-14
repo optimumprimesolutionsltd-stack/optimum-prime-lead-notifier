@@ -26,8 +26,8 @@ FROM_WA     = "whatsapp:+254727209720"
 # FROM_WA   = "whatsapp:+14155238886"
 
 TEAM_NUMBERS = [
+    "whatsapp:+254758449475",   # Chege (personal)
     "whatsapp:+254116246074",   # Business line
-    "whatsapp:+254727209720",   # Verified WhatsApp Business number
 ]
 
 app = Flask(__name__)
