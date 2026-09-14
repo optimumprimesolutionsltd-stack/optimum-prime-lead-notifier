@@ -2325,8 +2325,16 @@ def send_reminders():
                 else (f"Location: {demo_location}" if demo_location
                       else "Our team will meet you at the scheduled time.")
             )
+            # Three parameters, not four. The approved `demo_reminder` template
+            # is {{1}} name, {{2}} time, {{3}} details — it carries no date,
+            # and rightly so: it says "starts in 2 hours". Sending a fourth was
+            # rejected by Meta as a parameter mismatch, which this code treats
+            # as "template unusable" and answers with the free-text fallback —
+            # dropped for any customer who had not messaged us in the previous
+            # 24 hours. Which is all of them: this fires 2 hours before a demo
+            # that was booked days earlier. So the reminder has never arrived.
             r = _wa_notify(norm_client, "demo_reminder",
-                           [client_name, display_date, scheduled_time, reminder_detail],
+                           [client_name, scheduled_time, reminder_detail],
                            client_body)
             reminder_results["client_msg"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
