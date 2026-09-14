@@ -491,6 +491,63 @@ def format_time_display(time_str: str) -> str:
         return t
 
 
+# ── Bookable days and hours ──────────────────────────────────────────────────
+# The same rules the website's own demo form applies, in Python so the chat
+# widget can offer real slots as tappable chips rather than asking a visitor to
+# type a date and then telling them it was a Sunday.
+
+KE_HOLIDAYS_RECURRING = {"01-01", "05-01", "06-01", "10-10", "10-20", "12-12", "12-25", "12-26"}
+# Easter moves each year, so those are listed out rather than computed.
+KE_HOLIDAYS_ONEOFF = {"2026-04-03", "2026-04-06", "2027-03-26", "2027-03-29"}
+
+
+def is_date_blocked(date_str: str) -> bool:
+    """Sunday or Kenyan public holiday — we take no bookings at all."""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return True
+    if d.weekday() == 6:  # Sunday
+        return True
+    return date_str[5:] in KE_HOLIDAYS_RECURRING or date_str in KE_HOLIDAYS_ONEOFF
+
+
+def bookable_days(count: int = 5) -> list:
+    """The next `count` days we are open, starting tomorrow, as (iso, label)."""
+    out = []
+    day = datetime.now(timezone(timedelta(hours=3))).date() + timedelta(days=1)
+    # 30 days is far more than enough to find 5 open ones; it also stops a bad
+    # holiday list turning this into an infinite loop.
+    for _ in range(30):
+        iso = day.isoformat()
+        if not is_date_blocked(iso):
+            # Built by hand rather than with %-d, which is not portable —
+            # this runs on Linux but is edited on Windows.
+            out.append((iso, f"{day.strftime('%a')} {day.day} {day.strftime('%b')}"))
+        if len(out) >= count:
+            break
+        day += timedelta(days=1)
+    return out
+
+
+def bookable_hours(date_str: str) -> list:
+    """Hour slots for a date, as 12-hour labels. Empty when we are closed."""
+    if is_date_blocked(date_str):
+        return []
+    try:
+        saturday = datetime.strptime(date_str, "%Y-%m-%d").weekday() == 5
+    except ValueError:
+        return []
+    blocks = [(8, 13)] if saturday else [(8, 13), (14, 17)]
+    labels = []
+    for start, end in blocks:
+        for h in range(start, end):
+            ampm = "AM" if h < 12 else "PM"
+            h12 = 12 if h % 12 == 0 else h % 12
+            labels.append(f"{h12}:00 {ampm}")
+    return labels
+
+
 def format_date_display(date_str: str) -> str:
     """Convert '2026-07-15' to 'Wednesday, 15 July 2026'."""
     try:
@@ -851,6 +908,30 @@ PAST EVENTS (already held — mention only if the user asks about previous/recen
 - Inventory Management Breakfast Workshop (FREE) — held Friday, 24th July 2026 at Ndanga Hotel, Ruiru. Topics covered: stock control & reorder points, TallyPrime inventory features, audit & reconciliation tips, and a live Q&A. This event has already taken place.
 UPCOMING EVENTS: There are no upcoming events currently scheduled. If the user is interested in the next webinar, workshop, or training, invite them to contact us on +254 116 246 074 so we can notify them when the next one is announced. Do NOT proactively mention events unless the user asks about events, webinars, workshops, or upcoming training, and never invent event dates — if unsure whether an event is upcoming, treat it as not scheduled and direct the user to +254 116 246 074.
 
+QUICK REPLY BUTTONS:
+When your message ends with a question whose answer is a small, closed set, put a marker on the very last line so the website widget can offer the answers as buttons to tap. Format:
+  [[chips: Option one | Option two | Option three]]
+
+Two of these you must NOT write out yourself — our system holds the real opening days and hours, and a slot you invent is one we then have to ring back and take away:
+  [[chips:dates]]                 — offers the next days we are open
+  [[chips:times:YYYY-MM-DD]]      — offers the hours we work on that date (use the date already agreed)
+
+Rules for the marker:
+- On its own line, at the very end of the message, with nothing after it.
+- At most 8 options, each under 40 characters.
+- Each option must read as a complete answer to the question you just asked — tapping one sends it back as the customer's own reply, word for word.
+- Use it for: what they want to book, session type, the date, the time, and yes/no confirmations.
+- Do NOT use it for open questions — a name, company or phone number has nothing to offer.
+- NEVER put it on a message that is JSON (booking, handoff or escalate). Those must stay ONLY the JSON.
+- The customer never sees the marker itself, so never mention buttons, never describe them, and never repeat the options in your text as well.
+
+Examples:
+  "What would you like to book?" → [[chips: TallyPrime Demo | EOS® Consultation | Biz Analyst]]
+  "Would you like this online or at our Nairobi office?" → [[chips: Online | Physical]]
+  "Which day suits you?" → [[chips:dates]]
+  "What time works on that day?" → [[chips:times:2026-09-15]]
+  "Shall I put that through?" → [[chips: Yes, book it | Change something]]
+
 CONVERSATION STYLE:
 - Warm, professional, and concise. Use simple English suitable for Kenyan business owners.
 - Ask one question at a time to understand the user's business before recommending.
@@ -861,6 +942,59 @@ CONVERSATION STYLE:
 - If the user greets you, greet back warmly and ask their name.
 - If you know their name, use it naturally in conversation.
 """
+
+CHIP_MARKER = re.compile(r"\[\[\s*chips\s*:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
+MAX_CHIPS = 8
+MAX_CHIP_LEN = 40
+
+
+def extract_chips(reply: str) -> tuple:
+    """
+    Pull Zawadi's suggested quick replies out of a message and strip the marker.
+
+    Zawadi ends a message with `[[chips: A | B | C]]` when the next answer is a
+    small closed set, so the website widget can offer them as buttons instead of
+    asking someone to type "physical" on a phone keyboard. Two of the sets it
+    must not invent — the open days and the hours we work — so it writes
+    `[[chips:dates]]` / `[[chips:times:YYYY-MM-DD]]` and they are filled in here
+    from the real rules. That is the difference between a chip a visitor taps
+    and a slot we then have to ring back and take away from them.
+
+    Returns (clean_reply, chips). The marker is always removed, whatever the
+    channel: a WhatsApp recipient has nothing to tap and must never see it.
+    """
+    if not reply:
+        return reply, []
+
+    matches = CHIP_MARKER.findall(reply)
+    clean = CHIP_MARKER.sub("", reply).strip()
+    if not matches:
+        return clean, []
+
+    # Only the last marker counts — if the model emitted two, the later one
+    # belongs to the question it actually finished on.
+    spec = matches[-1].strip()
+    chips = []
+
+    if spec.lower() == "dates":
+        chips = [label for _iso, label in bookable_days(5)]
+    elif spec.lower().startswith("times"):
+        _, _, date_str = spec.partition(":")
+        chips = bookable_hours(date_str.strip())
+    else:
+        chips = [c.strip() for c in spec.split("|")]
+
+    # A chip is sent back verbatim as the visitor's next message, so anything
+    # too long to read on a button is also too long to be a useful answer.
+    seen = set()
+    out = []
+    for c in chips:
+        c = " ".join(c.split())[:MAX_CHIP_LEN]
+        if c and c.lower() not in seen:
+            seen.add(c.lower())
+            out.append(c)
+    return clean, out[:MAX_CHIPS]
+
 
 def get_zawadi_reply(messages: list, contact_name: str = "") -> str:
     """
@@ -957,6 +1091,10 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
     Zawadi to collect contact details since WhatsApp already provides them.
     """
     import json as _json
+
+    # Strip the quick-reply marker first, so nothing downstream ever sees it:
+    # not the JSON detection below, not a WhatsApp recipient, not the customer.
+    reply, chips = extract_chips(reply)
 
     # Where the lead actually came from, in the CRM's own vocabulary. Zawadi
     # answers on two channels and this function serves both: the website widget
@@ -1169,7 +1307,9 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
     except Exception as e:
         print(f'Zawadi reply JSON parse error: {e}')
 
-    return {'reply': reply, 'handoff': False}
+    # Chips ride along only on an ordinary reply. The booking, handoff and
+    # escalation returns above are the end of a flow, with nothing left to tap.
+    return {'reply': reply, 'handoff': False, 'quickReplies': chips}
 
 
 @app.route("/health", methods=["GET"])
