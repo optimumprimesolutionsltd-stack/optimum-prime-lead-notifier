@@ -874,7 +874,16 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
         clean = clean.strip().lstrip('`').rstrip('`').strip()
 
         if clean.startswith('{') and ('"booking"' in clean or '"handoff"' in clean or '"escalate"' in clean):
-            parsed = _json.loads(clean)
+            # Gemini sometimes appends a trailing sentence after the JSON despite
+            # being told to reply with ONLY the JSON — e.g.
+            # '{"booking": true, ...}We\'ve received your request...' — which
+            # json.loads() rejects outright as invalid (trailing data after a
+            # valid value). That exception used to be swallowed below and the
+            # raw, half-JSON text got sent straight to the customer as if it
+            # were an ordinary reply, with no lead ever created. raw_decode()
+            # parses just the JSON object at the start and ignores anything
+            # Gemini tacked on after it.
+            parsed, _ = _json.JSONDecoder().raw_decode(clean)
 
             # ── DEMO BOOKING (end-to-end) ─────────────────────────────────────
             if parsed.get('booking'):
