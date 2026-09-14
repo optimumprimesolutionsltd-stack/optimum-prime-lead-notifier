@@ -67,12 +67,13 @@ FIREBASE_WA_CONVOS_BASE  = f"{FIREBASE_BASE}/whatsapp_conversations"
 FIREBASE_BLOGS_BASE      = f"{FIREBASE_BASE}/siteData/blogs"
 FIREBASE_BLOGS_URL       = f"{FIREBASE_BLOGS_BASE}.json"
 
-# Team numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API)
-# Messages are SENT FROM +254727209720 (the registered API number)
-# Notifications are DELIVERED TO these numbers
+# Office/admin numbers (E.164 format, no 'whatsapp:' prefix needed for Meta API).
+# Every "new lead", "demo booked", "review submitted", etc. alert in this file
+# goes to both of these. Messages are SENT FROM +254727209720 (the registered
+# Meta API number) — it is also one of the two numbers alerts are DELIVERED TO.
 TEAM_NUMBERS = [
-    "+254758449475",
     "+254116246074",
+    "+254727209720",
 ]
 
 SERVICE_URL = os.environ.get("SERVICE_URL", "https://optimum-prime-lead-notifier.onrender.com")
@@ -1726,18 +1727,27 @@ def book_demo():
         elif not norm_client.startswith("+"):
             norm_client = "+254" + norm_client
 
-        # Uses the approved `demo_confirmation` template — free text to a client who has
-        # not messaged us in the last 24 hours is dropped.
-        # Covers both new bookings and reschedules; the Meet link / Google Calendar link
-        # and reschedule-specific wording from the old free-text version are dropped since
-        # the approved template body is fixed — client can still get the Meet link by
-        # replying, or from the admin panel.
+        # Uses the approved `demo_confirmation` template first — free text to a client
+        # who has not messaged us in the last 24 hours is dropped. Unlike the office/team
+        # alerts above, this used to call _wa_send_template directly with no fallback, so
+        # a paused/unapproved template meant the client silently got nothing at all and
+        # no one found out. Routed through _wa_notify now so it falls back to free text
+        # (which carries the real Meet link, unlike the fixed template body) the same way
+        # every other outbound message here already does.
         if demo_type == "online":
             details = f"Join here: {meet_link}" if meet_link else "Meeting link will be shared shortly"
         else:
             details = f"Our office: {demo_location}" if demo_location else "Location details to follow"
 
-        r = _wa_send_template(norm_client, "demo_confirmation", [client_name, display_date, demo_time, details])
+        client_fallback_body = (
+            f"Hello {client_name}! 👋\n\n"
+            f"Your TallyPrime demo with Optimum Prime Solutions is confirmed:\n\n"
+            f"📆 *Date:* {display_date}\n"
+            f"🕐 *Time:* {demo_time} (EAT)\n"
+            f"📌 *{details}*\n\n"
+            f"Questions? Call or WhatsApp us: +254 116 246 074"
+        )
+        r = _wa_notify(norm_client, "demo_confirmation", [client_name, display_date, demo_time, details], client_fallback_body, name=client_name)
         results["client"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
 
     # ── Save booking to Firebase ─────────────────────────────────────────────
@@ -1773,8 +1783,14 @@ def book_demo():
     return jsonify({
         "success": True,
         "office_notified": office_ok,
+        "office_total": len(results["office"]),
         "team_notified": team_ok,
+        "team_total": len(results["team"]),
         "client_notified": results["client"].get("success", False) if results["client"] else False,
+        # The frontend lead record only ever had this while the response sat unread —
+        # it's what lets the admin panel show/copy the real link and put it in
+        # calendar invites instead of "link to follow" forever. See LeadsManager.tsx.
+        "meetLink": meet_link,
         "details": results
     })
 
@@ -1859,8 +1875,11 @@ def send_reminders():
         meet_sent      = lead.get("meetSent", False)
         reminder_sent  = lead.get("reminderSent", False)
 
-        # Only remind for confirmed scheduled demos that haven't been reminded yet
-        if status != "Demo Scheduled" or not scheduled_date or not scheduled_time:
+        # Only remind for confirmed scheduled demos that haven't been reminded yet.
+        # The pipeline stage was renamed from "Demo Scheduled" to "Schedule a Demo"
+        # (see LeadsManager.tsx's one-time migration) — this filter still checked the
+        # old string, so no lead has ever matched and this reminder has never fired.
+        if status != "Schedule a Demo" or not scheduled_date or not scheduled_time:
             continue
         if not meet_sent:
             continue
