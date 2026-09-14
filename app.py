@@ -235,7 +235,16 @@ def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, na
         return result
     print(f"[Meta WA] Template '{template_name}' unusable ({result['error']}) — "
           f"falling back to free text for {to}, which only delivers inside an open 24h window")
-    return _wa_send(to, fallback_body, name=name)
+    fallback = _wa_send(to, fallback_body, name=name)
+    # The free-text send reports success off an HTTP 200, but Meta drops it
+    # unread outside the 24h window and only says so later on the status
+    # webhook. Callers that tell a human "the client was notified" have to be
+    # able to tell this apart from a real delivery, so say it here rather than
+    # letting a 200 stand in for "they got it".
+    fallback["delivery_uncertain"] = True
+    fallback["template_unusable"] = template_name
+    fallback["template_error"] = result.get("error", "")
+    return fallback
 
 
 def _template_params(params: list) -> list:
@@ -433,8 +442,13 @@ def build_google_calendar_link(name: str, company: str, date_str: str, time_slot
     try:
         # Extract start time from slot e.g. "10:00 AM – 11:00 AM" → "10:00 AM"
         start_str = time_slot.split("–")[0].strip()
-        # Parse datetime in EAT (UTC+3)
-        dt_naive = datetime.strptime(f"{date_str} {start_str}", "%Y-%m-%d %I:%M %p")
+        # Two shapes reach here: the public form's 12h range and the admin
+        # pop-up's 24h slot ("14:00"). Only the first used to parse, so every
+        # demo booked by the team came out with no calendar link at all.
+        try:
+            dt_naive = datetime.strptime(f"{date_str} {start_str}", "%Y-%m-%d %I:%M %p")
+        except ValueError:
+            dt_naive = datetime.strptime(f"{date_str} {start_str}", "%Y-%m-%d %H:%M")
         eat = timezone(timedelta(hours=3))
         dt_eat  = dt_naive.replace(tzinfo=eat)
         dt_utc  = dt_eat.astimezone(timezone.utc)
@@ -457,6 +471,24 @@ def build_google_calendar_link(name: str, company: str, date_str: str, time_slot
         )
     except Exception:
         return ""
+
+
+def format_time_display(time_str: str) -> str:
+    """
+    A time a client can read, from either shape the app stores.
+
+    The admin booking pop-up saves 24h slots ("14:00"); the public request form
+    saves hour ranges ("2:00 PM – 3:00 PM"). Confirmations went out with the
+    raw stored value, so a client approved for a 2pm demo was told "14:00".
+    Anything unrecognised is passed through untouched.
+    """
+    t = (time_str or "").strip()
+    if not t:
+        return t
+    try:
+        return datetime.strptime(t, "%H:%M").strftime("%I:%M %p").lstrip("0")
+    except ValueError:
+        return t
 
 
 def format_date_display(date_str: str) -> str:
@@ -759,7 +791,11 @@ You have full authority to collect booking requests on behalf of Optimum Prime S
 2️⃣ *EOS® Business Consultation* — a 90-min session on the Entrepreneurial Operating System
 3️⃣ *Biz Analyst Enquiry* — learn how Biz Analyst integrates with TallyPrime for business intelligence"
 
-Then collect the following details ONE AT A TIME in this order:
+FIRST, TAKE WHAT THEY HAVE ALREADY GIVEN YOU. Before you ask anything, re-read the whole conversation and pull out every booking detail the user has already supplied — including several in a single message, and including ones they volunteered before you asked. People often write "Hi, I'm James Mwangi from Acme Ltd, 0712 345 678, can we do Tuesday at 10am online?" — that is five of the six details. Treat every one of them as collected.
+
+NEVER ask for a detail you have already been given. Re-asking is the single most irritating thing you can do: it tells the customer you weren't listening, and it is the fastest way to lose a booking. If you are unsure whether something was meant as an answer, confirm it back ("I have Acme Ltd as the company — correct?") rather than asking the question again from scratch.
+
+Then collect ONLY THE DETAILS STILL MISSING, one at a time, in this order:
 
 1. Full name — if you already know it (from earlier in this conversation or the WHATSAPP PROFILE note below), confirm it briefly instead of asking from scratch, e.g. "I'll use {name} for this booking — is that right?"
 2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678) — if this conversation is happening on WhatsApp (i.e. there is a WHATSAPP PROFILE note below), you already have their number. Do NOT ask for it — skip straight to company name, and use an empty string "" for phone in the final JSON below (our system fills it in automatically). Only ask for a phone number if there is no WHATSAPP PROFILE note at all (i.e. this is the website chat widget).
@@ -769,7 +805,9 @@ Then collect the following details ONE AT A TIME in this order:
 6. Session type: Online (Google Meet) or Physical (at our Nairobi office)
 
 RULES:
-- Ask ONE question at a time. Do not ask multiple questions in one message.
+- Ask ONE question at a time. Do not ask multiple questions in one message. This governs how you ASK — it does not limit how much you ACCEPT: if one message from the user answers four questions, take all four and move on to the first one still outstanding.
+- If a single message completes every detail you need, do not ask anything further — go straight to the summary and ask them to confirm.
+- Keep a running tally of what you have. Before each question, ask yourself "do I already have this?" — if yes, skip it.
 - If they give an invalid date (Sunday, public holiday, or past date), politely explain and ask again.
 - Kenya public holidays to block: 1 Jan, 1 May, 1 Jun, 10 Oct, 20 Oct, 12 Dec, 25 Dec, 26 Dec, and Easter (Good Friday + Easter Monday).
 - If they pick Saturday, remind them slots are 8AM–12PM only.
@@ -783,6 +821,7 @@ RULES:
 - If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
 
 GENERAL HANDOFF (non-booking enquiries):
+When the user wants to speak to a person, get a quote, or be called back — the same rule applies: whatever they have already told you counts, and is never asked for twice.
 When the user wants to speak to a person, get a quote, or be called back:
 1. Name: if you already know their name — either from earlier in this conversation, or from the WHATSAPP PROFILE note below — do NOT ask again from scratch. Just confirm it briefly, e.g. "I'll pass this to our team as {name} — is that the right name to use?" Only ask "What's your name?" outright if you truly have no name to work with.
 2. Phone number: if this conversation is happening on WhatsApp, you already have their number — do NOT ask for it. Only ask for a phone number if there is no WHATSAPP PROFILE note at all (i.e. this is the website chat widget, not WhatsApp).
@@ -911,6 +950,15 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
     """
     import json as _json
 
+    # Where the lead actually came from, in the CRM's own vocabulary. Zawadi
+    # answers on two channels and this function serves both: the website widget
+    # posts to /chat with no sender identity, a WhatsApp message always carries
+    # one. Writing the channel here — rather than a label like "Zawadi Chatbot
+    # Booking" — is what stops these leads landing in the admin's "no source
+    # recorded" queue: the CRM only recognises its own source values, and
+    # anything else reads as Unknown however descriptive it looks.
+    channel_source = "whatsapp" if from_phone else "website"
+
     try:
         clean = reply.strip()
         if clean.startswith('```'):
@@ -965,7 +1013,11 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         'demoType':    demo_type,
                         'requestType': request_type,
                         'status':      'New',
-                        'source':      'Zawadi Chatbot Booking',
+                        'source':      channel_source,
+                        # The raw origin, kept alongside the source rather than
+                        # instead of it, so "which of these did the bot take?"
+                        # is still answerable.
+                        'capturedVia': 'Zawadi chatbot booking',
                         'message':     f'Preferred: {display_date} at {display_time} ({demo_type}) — {"Consultation" if request_type == "consultation" else "Demo"}',
                         'createdAt':   datetime.now(timezone.utc).isoformat(),
                     }
@@ -1060,7 +1112,8 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         'name':      name,
                         'phone':     phone,
                         'message':   interest,
-                        'source':    'Zawadi Chatbot Handoff',
+                        'source':    channel_source,
+                        'capturedVia': 'Zawadi chatbot handoff',
                         'status':    'New',
                         'createdAt': datetime.now(timezone.utc).isoformat(),
                     }
@@ -1686,10 +1739,19 @@ def book_demo():
     team3_phone    = data.get("teamMember3Phone", "")
     source         = data.get("source", "admin_booking")
     notify_client  = data.get("notifyClient", True)
-    notify_email   = data.get("notifyClientEmail", False)
+    # Defaults ON, and read as "unless you said not to". WhatsApp is the only
+    # channel this used to try, and outside the 24h window that a customer's
+    # own message opens, Meta drops it — which is precisely the case for
+    # someone who booked through the website widget and has never messaged the
+    # business number. Email is the one channel that always arrives, so a
+    # caller that says nothing about it gets it.
+    notify_email   = data.get("notifyClientEmail", True)
 
-    # Format date nicely
+    # Format date and time nicely. `demo_time` stays as stored — it is what the
+    # booking record and the calendar link are built from — while `display_time`
+    # is what every person in these messages actually reads.
     display_date = format_date_display(demo_date) if demo_date else demo_date
+    display_time = format_time_display(demo_time)
 
     # Generate Meet link only for online demos
     meet_link = ""
@@ -1713,7 +1775,7 @@ def book_demo():
         f"📞 *Client phone:* {client_phone}"
         f"{email_line}\n\n"
         f"📆 *Date:* {display_date}\n"
-        f"🕐 *Time:* {demo_time} (EAT)\n"
+        f"🕐 *Time:* {display_time} (EAT)\n"
         f"📌 *Type:* {demo_type_label}"
         f"{location_line}\n"
         f"👤 *Booked by:* {team_name} ({team_phone})"
@@ -1728,13 +1790,13 @@ def book_demo():
         f"https://www.optimumprimesolutions.co.ke/admin"
     )
 
-    results = {"office": [], "team": [], "client": None}
+    results = {"office": [], "team": [], "client": None, "client_email": None}
 
     # Send to both office numbers
     for to in TEAM_NUMBERS:
         r = _wa_notify(to, "team_alert",
                        ["demo booking", client_name, client_phone or "not provided",
-                        f"{display_date} at {demo_time} EAT, {demo_type_label}"],
+                        f"{display_date} at {display_time} EAT, {demo_type_label}"],
                        office_body)
         results["office"].append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
@@ -1757,7 +1819,7 @@ def book_demo():
             f"🏢 *Company:* {client_company}\n"
             f"📞 *Client phone:* {client_phone}\n"
             f"📆 *Date:* {display_date}\n"
-            f"🕐 *Time:* {demo_time} (EAT)\n"
+            f"🕐 *Time:* {display_time} (EAT)\n"
             f"📌 *Type:* {demo_type_label}\n"
         )
         if demo_type == "physical" and demo_location:
@@ -1770,7 +1832,7 @@ def book_demo():
 
         r = _wa_notify(norm_phone, "team_alert",
                        ["demo assignment", client_name, client_phone or "not provided",
-                        f"{display_date} at {demo_time} EAT, {demo_type_label}"],
+                        f"{display_date} at {display_time} EAT, {demo_type_label}"],
                        team_body)
         results["team"].append({"to": norm_phone, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
 
@@ -1806,12 +1868,74 @@ def book_demo():
             f"Hello {client_name}! 👋\n\n"
             f"Your TallyPrime demo with Optimum Prime Solutions is confirmed:\n\n"
             f"📆 *Date:* {display_date}\n"
-            f"🕐 *Time:* {demo_time} (EAT)\n"
+            f"🕐 *Time:* {display_time} (EAT)\n"
             f"📌 *{details}*\n\n"
             f"Questions? Call or WhatsApp us: +254 116 246 074"
         )
-        r = _wa_notify(norm_client, "demo_confirmation", [client_name, display_date, demo_time, details], client_fallback_body, name=client_name)
-        results["client"] = {"to": norm_client, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")}
+        r = _wa_notify(norm_client, "demo_confirmation", [client_name, display_date, display_time, details], client_fallback_body, name=client_name)
+        results["client"] = {
+            "to": norm_client,
+            "message_id": r.get("message_id", ""),
+            "success": r["success"],
+            "error": r.get("error", ""),
+            # True when the approved template couldn't be used and this went out
+            # as free text, which Meta accepts and then drops unless the client
+            # messaged us in the last 24 hours. The admin panel shows this as
+            # "may not have reached them" rather than a clean tick.
+            "delivery_uncertain": r.get("delivery_uncertain", False),
+            "template_error": r.get("template_error", ""),
+        }
+
+    # ── Client email confirmation ────────────────────────────────────────────
+    # This is the half that was missing: `notifyClientEmail` was read off the
+    # request and then never used, so the only confirmation a client could get
+    # was the WhatsApp one above — and when that was dropped, the person who
+    # booked a demo heard nothing at all about the date and time we'd agreed.
+    if notify_client and notify_email and client_email:
+        cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time)
+        if demo_type == "online":
+            where_label = "Google Meet"
+            where_value = (f'<a href="{meet_link}" style="color:{EMAIL_ACCENT};">{meet_link}</a>'
+                           if meet_link else "The meeting link will be sent to you shortly.")
+        else:
+            where_label = "Location"
+            where_value = demo_location or "Location details to follow."
+
+        rows = [
+            ("Date", display_date),
+            ("Time", f"{display_time} (EAT)"),
+            (where_label, where_value),
+        ]
+        rows_html = "".join(
+            f'<tr>'
+            f'<td style="padding:8px 0;color:{EMAIL_TEXT_DIM};font-size:14px;width:110px;">{label}</td>'
+            f'<td style="padding:8px 0;color:{EMAIL_TEXT};font-size:15px;font-weight:600;">{value}</td>'
+            f'</tr>'
+            for label, value in rows
+        )
+        cal_html = (
+            f'<p style="margin:24px 0 0;">'
+            f'<a href="{cal_link}" style="display:inline-block;background:{EMAIL_ACCENT};color:#ffffff;'
+            f'text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;">'
+            f'Add to your calendar</a></p>'
+        ) if cal_link else ""
+
+        email_html = (
+            f'<div style="background:{EMAIL_BG};padding:32px;font-family:Arial,Helvetica,sans-serif;">'
+            f'<div style="max-width:560px;margin:0 auto;background:{EMAIL_BG};border:1px solid {EMAIL_BORDER};'
+            f'border-radius:14px;padding:32px;">'
+            f'<h1 style="margin:0 0 8px;color:{EMAIL_TEXT};font-size:22px;">Your demo is confirmed</h1>'
+            f'<p style="margin:0 0 24px;color:{EMAIL_TEXT_DIM};font-size:15px;line-height:1.6;">'
+            f'Hello {client_name}, your TallyPrime demo with Optimum Prime Solutions is booked. '
+            f'Here are the details:</p>'
+            f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
+            f'{cal_html}'
+            f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
+            f'Need to change the time? Reply to this email or WhatsApp us on +254 116 246 074.</p>'
+            f'</div></div>'
+        )
+        er = _send_email(client_email, f"Your TallyPrime demo — {display_date} at {display_time}", email_html)
+        results["client_email"] = {"to": client_email, "success": er["success"], "error": er.get("error", "")}
 
     # ── Save booking to Firebase ─────────────────────────────────────────────
     try:
@@ -1849,7 +1973,15 @@ def book_demo():
         "office_total": len(results["office"]),
         "team_notified": team_ok,
         "team_total": len(results["team"]),
+        # What the client actually got, kept apart from "did the request work".
+        # `success` above is about the request, not the person: the admin panel
+        # used to read it as proof the client had been told, and say so on
+        # screen, while the confirmation had in fact been dropped.
         "client_notified": results["client"].get("success", False) if results["client"] else False,
+        "client_delivery_uncertain": results["client"].get("delivery_uncertain", False) if results["client"] else False,
+        "client_error": results["client"].get("error", "") if results["client"] else "",
+        "client_email_notified": results["client_email"].get("success", False) if results["client_email"] else False,
+        "client_email_error": results["client_email"].get("error", "") if results["client_email"] else "",
         # The frontend lead record only ever had this while the response sat unread —
         # it's what lets the admin panel show/copy the real link and put it in
         # calendar invites instead of "link to follow" forever. See LeadsManager.tsx.
