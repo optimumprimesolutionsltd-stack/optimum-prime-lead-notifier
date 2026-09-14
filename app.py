@@ -591,10 +591,18 @@ def notify_team(lead: dict) -> list:
         print(f"[Team email] error: {e}")
 
     if not is_webinar:
+        # The preferred slot was read above and then dropped: the team's email
+        # alert carries it, the WhatsApp one — the one actually read first —
+        # did not, so whoever picked up a lead had to open the panel to find
+        # out when the person wanted to be seen. `new_lead_alert` has four
+        # fixed parameters, so it rides in alongside the interest.
+        slot_bits = [format_date_display(demo_date) if demo_date else "", format_time_display(demo_time)]
+        slot = " at ".join(b for b in slot_bits if b)
+        interest_line = f"{interest} — wants {slot}" if slot else interest
         # Uses the approved `new_lead_alert` template — free text to these numbers is
         # dropped unless someone on the team messaged us in the last 24 hours.
         for to in TEAM_NUMBERS:
-            r = _wa_send_template(to, "new_lead_alert", [name, company, phone, interest])
+            r = _wa_send_template(to, "new_lead_alert", [name, company, phone, interest_line])
             results.append({"to": to, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
         return results
 
