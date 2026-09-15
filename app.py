@@ -367,6 +367,39 @@ def _send_email_batch(emails: list) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def _email_team(subject: str, heading: str, rows: list, footer: str = '') -> dict:
+    """
+    Tell the team something by email as well as by WhatsApp.
+
+    Best-effort and never raises: an email failure must not stop a booking
+    being saved or a WhatsApp alert being attempted. Worth having because
+    WhatsApp is refused outright whenever the account's payment eligibility
+    lapses, and a booking nobody hears about is worse than a duplicate
+    notification.
+    """
+    if not ADMIN_NOTIFY_EMAIL:
+        return {"success": False, "error": "ADMIN_NOTIFY_EMAIL not configured"}
+    try:
+        rows_html = ''.join(
+            f'<tr>'
+            f'<td style="padding:6px 14px 6px 0;color:{EMAIL_TEXT_DIM};font-size:13px;white-space:nowrap;">{html.escape(str(k))}</td>'
+            f'<td style="padding:6px 0;color:{EMAIL_TEXT};font-size:14px;font-weight:600;">{html.escape(str(v))}</td>'
+            f'</tr>' for k, v in rows if v)
+        body = (
+            f'<div style="background:{EMAIL_BG};padding:28px;font-family:Arial,Helvetica,sans-serif;">'
+            f'<div style="max-width:560px;margin:0 auto;border:1px solid {EMAIL_BORDER};'
+            f'border-radius:14px;padding:28px;">'
+            f'<h1 style="margin:0 0 18px;color:{EMAIL_TEXT};font-size:19px;">{html.escape(heading)}</h1>'
+            f'<table style="border-collapse:collapse;">{rows_html}</table>'
+            f'<p style="margin:22px 0 0;font-size:13px;color:{EMAIL_TEXT_DIM};">{footer}'
+            f'<br/><a href="https://www.optimumprimesolutions.co.ke/admin" style="color:{EMAIL_ACCENT};">'
+            f'Open the admin panel</a></p>'
+            f'</div></div>')
+        return _send_email(ADMIN_NOTIFY_EMAIL, subject, body)
+    except Exception as e:
+        print(f'[Team email] {e}')
+        return {"success": False, "error": str(e)}
+
 def _unsub_token(email: str) -> str:
     """Keyed hash of a lowercased email — lets someone unsubscribe their own
     address via a plain link with no login, but can't be forged for another
@@ -1217,6 +1250,19 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                                    office_body)
                 except Exception as e:
                     print(f'Office notify error: {e}')
+
+                # The same alert by email. The WhatsApp above is refused
+                # outright whenever the account's payment eligibility
+                # lapses, and a booking the team never hears about is a
+                # customer who waits and then goes elsewhere.
+                _email_team(
+                    f'New {req_title.lower()} request via Zawadi - {name}',
+                    f'New {req_title} request via Zawadi',
+                    [('Client', name), ('Company', company), ('Phone', phone),
+                     ('Email', email), ('Preferred date', display_date),
+                     ('Preferred time', display_time + ' (EAT)'),
+                     ('Session type', 'Online' if demo_type == 'online' else 'Physical')],
+                    'Pending your confirmation - review and confirm the slot.')
 
                 # Only send the "working on it" WhatsApp confirmation when this booking
                 # came from the website widget — a WhatsApp-originated booking already
@@ -2334,6 +2380,22 @@ def book_demo():
                         f"{display_date} at {display_time} EAT, {demo_type_label}"],
                        team_body)
         results["team"].append({"to": norm_phone, "message_id": r.get("message_id", ""), "success": r["success"], "error": r.get("error", "")})
+
+    # Email the office as well as WhatsApp them. This booking was alerted by
+    # WhatsApp alone, so it vanished completely whenever Meta refused
+    # business-initiated messages - while ordinary leads, which have had an
+    # email alert all along, kept arriving. That difference is what made it
+    # look like demo bookings specifically were broken.
+    _email_team(
+        f'Demo booked - {client_name} on {display_date}',
+        'Demo booked',
+        [('Client', client_name), ('Company', client_company),
+         ('Phone', client_phone), ('Email', client_email),
+         ('Date', display_date), ('Time', display_time + ' (EAT)'),
+         ('Type', demo_type_label), ('Location', demo_location),
+         ('Meet link', meet_link), ('Booked by', team_name),
+         ('Notes', demo_notes)],
+        'Booked from the admin panel.')
 
     send_team_notification(team_name, team_phone)
     if team2_name and team2_phone:
