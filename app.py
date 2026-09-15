@@ -1490,6 +1490,61 @@ def admin_templates():
                         "http_status": r.status_code, "meta_response": r.json()})
     return jsonify({"waba_id": META_WABA_ID, "results": results})
 
+@app.route("/admin/account", methods=["GET"])
+def admin_account():
+    """
+    The account-level gates a message has to clear before template validity
+    even matters:
+
+      business_verification_status - unverified caps who you may message
+      account_review_status        - a rejected WABA sends nothing
+      messaging_limit_tier         - unique recipients per 24h
+      quality_rating / status      - a flagged number gets throttled
+
+    Added after every template checked out correct and sends still failed
+    with 131042, Business eligibility payment issue - which is a billing
+    problem on the account, invisible from the template list entirely.
+
+    Read-only. Gated on TEMPLATE_ADMIN_KEY like the templates route.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    if not META_WA_TOKEN:
+        return jsonify({"error": "META_WA_TOKEN is not set"}), 503
+
+    def graph(path, fields):
+        return requests.get(
+            "https://graph.facebook.com/v20.0/" + path,
+            params={"fields": fields, "access_token": META_WA_TOKEN}, timeout=20,
+        ).json()
+
+    waba = graph(META_WABA_ID, 
+                 "id,name,currency,timezone_id,account_review_status,business_verification_status,ownership_type,primary_funding_id")
+    numbers = graph(META_WABA_ID + "/phone_numbers",
+                    "display_phone_number,verified_name,status,quality_rating,messaging_limit_tier,code_verification_status,throughput")
+    configured = graph(META_WA_PHONE_ID,
+                       "display_phone_number,verified_name,status,quality_rating,messaging_limit_tier")
+
+    notes = []
+    if not waba.get("primary_funding_id"):
+        notes.append(
+            "No primary_funding_id on the WABA - no payment method is attached. Every business-initiated (template) send fails with 131042, accepted with an HTTP 200 and failed later on the status webhook. Service replies inside an open 24h window still work, which is why team members still get messages and customers get nothing.")
+    if waba.get("business_verification_status") not in (None, "verified"):
+        notes.append(
+            "Business is " + str(waba.get("business_verification_status")) +
+            " - until verified, Meta caps which and how many recipients you may message. Separate from the payment gate above: fixing one does not fix the other.")
+    if waba.get("account_review_status") not in (None, "APPROVED"):
+        notes.append("WABA account_review_status is " + str(waba.get("account_review_status")))
+
+    return jsonify({
+        "waba": waba,
+        "phone_numbers_on_waba": numbers.get("data", numbers),
+        "configured_sending_number": configured,
+        "what_this_means": notes or ["No account-level blocker found in these fields."],
+    })
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
