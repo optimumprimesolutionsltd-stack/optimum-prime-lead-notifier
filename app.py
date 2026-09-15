@@ -1763,6 +1763,81 @@ def admin_template_category():
 
     return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
 
+# Template bodies that need correcting at Meta. Unlike category - which is
+# frozen once approved - a body can be edited, and the change goes back
+# through review while the current version keeps sending.
+#
+# lead_confirmation hardcoded TallyPrime into a sentence that {{2}} already
+# fills with the real product, so a Mavuno HR enquiry was answered with
+# "thank you for your interest in TallyPrime". Same for EOS and Biz Analyst.
+# The parameters are unchanged, so no call site moves.
+TEMPLATE_BODY_FIXES = {
+    "lead_confirmation": {
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Thank you for getting in touch with Optimum Prime Solutions. We've received your enquiry about {{2}} and our team will get back to you shortly.",
+            "",
+            "📞 +254 116 246 074",
+            "🌐 www.optimumprimesolutions.co.ke",
+        ]),
+        "example": ["John Mark", "Mavuno HR Demo"],
+    },
+}
+
+
+@app.route("/admin/templates/body", methods=["GET", "POST"])
+def admin_template_body():
+    """
+    GET  - show the current body beside the intended one.
+    POST - submit the new body to Meta for review.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    if not META_WA_TOKEN:
+        return jsonify({"error": "META_WA_TOKEN is not set"}), 503
+
+    listing = requests.get(
+        "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+        params={"limit": 200, "access_token": META_WA_TOKEN}, timeout=20,
+    ).json()
+    if "data" not in listing:
+        return jsonify({"error": "could not list templates", "meta_response": listing}), 502
+    live = {t["name"]: t for t in listing["data"]}
+
+    results = []
+    for name, fix in sorted(TEMPLATE_BODY_FIXES.items()):
+        tpl = live.get(name)
+        if not tpl:
+            results.append({"name": name, "action": "missing on this WABA"})
+            continue
+        current = next((c.get("text") for c in tpl.get("components", [])
+                        if c.get("type") == "BODY"), "")
+        if current.strip() == fix["text"].strip():
+            results.append({"name": name, "action": "already correct"})
+            continue
+        if request.method == "GET":
+            results.append({"name": name, "action": "would be changed",
+                            "current_body": current, "new_body": fix["text"]})
+            continue
+        # Meta wants every component resubmitted, not just the changed one.
+        components = [c for c in tpl.get("components", []) if c.get("type") != "BODY"]
+        components.append({"type": "BODY", "text": fix["text"],
+                           "example": {"body_text": [fix["example"]]}})
+        r = requests.post(
+            "https://graph.facebook.com/v20.0/" + tpl["id"],
+            headers={"Authorization": "Bearer " + META_WA_TOKEN,
+                     "Content-Type": "application/json"},
+            json={"components": components}, timeout=20,
+        )
+        results.append({"name": name,
+                        "action": "submitted" if r.status_code == 200 else "FAILED",
+                        "http_status": r.status_code, "meta_response": r.json()})
+
+    return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
