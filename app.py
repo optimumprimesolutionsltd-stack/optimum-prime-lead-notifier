@@ -1528,16 +1528,30 @@ def admin_account():
                        "display_phone_number,verified_name,status,quality_rating,messaging_limit_tier")
 
     notes = []
-    if not waba.get("primary_funding_id"):
+    # An errored Graph call is not a finding. Reading a missing field off an
+    # error response and reporting it as "no payment method attached" is how
+    # a permissions problem gets written up as a billing problem.
+    if "error" in waba:
         notes.append(
-            "No primary_funding_id on the WABA - no payment method is attached. Every business-initiated (template) send fails with 131042, accepted with an HTTP 200 and failed later on the status webhook. Service replies inside an open 24h window still work, which is why team members still get messages and customers get nothing.")
-    if waba.get("business_verification_status") not in (None, "verified"):
-        notes.append(
-            "Business is " + str(waba.get("business_verification_status")) +
-            " - until verified, Meta caps which and how many recipients you may message. Separate from the payment gate above: fixing one does not fix the other.")
-    if waba.get("account_review_status") not in (None, "APPROVED"):
-        notes.append("WABA account_review_status is " + str(waba.get("account_review_status")))
+            "Could not read the WABA itself: " + str(waba["error"].get("message", "")) +
+            " This token can send messages but cannot read account-level fields, so payment method, business verification and account review status CANNOT be checked from here - they have to be looked at in Business Manager. Nothing below is evidence either way about billing.")
+    else:
+        if not waba.get("primary_funding_id"):
+            notes.append(
+                "No primary_funding_id on the WABA - no payment method is attached. Business-initiated (template) sends fail with 131042.")
+        if waba.get("business_verification_status") not in (None, "verified"):
+            notes.append(
+                "Business is " + str(waba.get("business_verification_status")) +
+                " - until verified, Meta caps which and how many recipients you may message.")
+        if waba.get("account_review_status") not in (None, "APPROVED"):
+            notes.append("WABA account_review_status is " + str(waba.get("account_review_status")))
 
+    for n in numbers.get("data", []) if isinstance(numbers, dict) else []:
+        if n.get("quality_rating") not in (None, "GREEN"):
+            notes.append(str(n.get("display_phone_number")) + " quality is " +
+                         str(n.get("quality_rating")) + " - throttled or at risk.")
+        if n.get("status") != "CONNECTED":
+            notes.append(str(n.get("display_phone_number")) + " status is " + str(n.get("status")))
     return jsonify({
         "waba": waba,
         "phone_numbers_on_waba": numbers.get("data", numbers),
