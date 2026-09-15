@@ -8,6 +8,7 @@ import re
 import json
 import html
 import csv
+import collections
 import io
 import uuid
 import hashlib
@@ -137,6 +138,14 @@ SERVICE_URL = os.environ.get("SERVICE_URL", "https://optimum-prime-lead-notifier
 app = Flask(__name__)
 CORS(app)
 
+
+# Recent delivery verdicts from the status webhook, newest last. Meta accepts
+# a send with an HTTP 200 and only reports the real outcome here, so without
+# keeping these there is no way to tell a delivered message from one that was
+# accepted and silently dropped. Bounded, in memory, and deliberately not
+# persisted: this is for answering 'did that last send actually land', not a
+# record of anything.
+WA_DELIVERY_LOG = collections.deque(maxlen=100)
 
 def _wa_send(to: str, body: str, name: str = "", force_log: bool = False) -> dict:
     """
@@ -1559,6 +1568,26 @@ def admin_account():
         "what_this_means": notes or ["No account-level blocker found in these fields."],
     })
 
+@app.route("/admin/deliveries", methods=["GET"])
+def admin_deliveries():
+    """
+    What Meta actually did with recent sends, newest last.
+
+    The send side reports success off an HTTP 200, which is why every
+    diagnosis so far has had to be inferred. This is the verdict itself,
+    with the error code attached.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    entries = list(WA_DELIVERY_LOG)
+    return jsonify({
+        "count": len(entries),
+        "note": "Empty means the status webhook has delivered nothing since the last restart - either no sends, or the webhook is not reaching this service.",
+        "deliveries": entries,
+    })
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
@@ -1610,6 +1639,20 @@ def meta_status_webhook():
                     status    = status_obj.get("status", "")
                     to_number = status_obj.get("recipient_id", "")
                     msg_id    = status_obj.get("id", "")
+                    # Keep every verdict, not just the failures that get alerted
+                    # on: "it says sent but nothing arrived" is only answerable
+                    # if the successes were kept too.
+                    err0 = (status_obj.get("errors") or [{}])[0]
+                    WA_DELIVERY_LOG.append({
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "to": "+" + to_number,
+                        "status": status,
+                        "message_id": msg_id,
+                        "error_code": err0.get("code"),
+                        "error_title": err0.get("title"),
+                        "error_message": err0.get("message"),
+                        "error_details": (err0.get("error_data") or {}).get("details"),
+                    })
                     is_team_recipient = to_number.lstrip("+") in {n.lstrip("+") for n in TEAM_NUMBERS}
                     if status in {"failed", "undelivered"}:
                         errors = status_obj.get("errors", [{}])
