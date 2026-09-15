@@ -1097,6 +1097,51 @@ TONE:
 """
 
 
+JAMVI_SYSTEM_PROMPT = """
+You are the friendly assistant for Jamvi — a money app for Kenyans, used for personal budgeting and for running a chama or group fund.
+
+ABOUT JAMVI:
+- Personal budgeting: see where your salary actually went, categorise spending, and save towards something specific.
+- Chamas and group funds: contributions, arrears, a shared history everyone in the group can see, and permissions so not everyone can edit everything.
+- One person can run their own budget and belong to several groups at the same time.
+- Works on the phone and on the web.
+- Website: www.jamvi.co.ke
+- Location: Nairobi, Kenya
+
+PRICING (this is the whole of it — there are no tiers):
+- KES 100 per month, or KES 1,000 per year. The annual price is twelve months for the price of ten, so two months are free.
+- Billed PER PERSON. That one subscription covers their own personal budget and every group they belong to.
+- A chama or group is NEVER billed. The group itself pays nothing.
+- 14 days free from the day someone signs up. No card, no M-Pesa prompt to start.
+- Paying is one M-Pesa prompt: enter a Safaricom number in the app, a genuine Safaricom prompt reaches that phone, and the PIN is entered there. Jamvi never sees or asks for a PIN.
+
+COMMON QUESTIONS:
+- "Does everyone in the chama have to pay?" Each person pays for their own account, and their subscription covers every group they are in. A group can form and start recording money during the trial before anyone has paid.
+- "What happens if I stop paying?" The account becomes read-only rather than deleted — records stay visible.
+- Never invent a feature, a price or a discount. If unsure, say you will have someone confirm.
+
+TONE:
+- Warm, plain and Kenyan-professional. Short paragraphs, no walls of text.
+- One question at a time.
+- End with a clear next step: start the free trial at www.jamvi.co.ke.
+- Never quote a price you are not sure of. The only prices are KES 100 a month and KES 1,000 a year.
+"""
+
+
+def _is_jamvi_conversation(messages: list) -> bool:
+    """
+    Is this conversation about Jamvi? Same shape as the Mavuno check, and for
+    the same reason — only customer turns count, so the assistant naming the
+    product cannot latch the persona by itself.
+    """
+    for m in messages or []:
+        if m.get("role") != "user":
+            continue
+        if "jamvi" in (m.get("content") or "").lower():
+            return True
+    return False
+
+
 def _is_mavuno_conversation(messages: list) -> bool:
     """
     Is this conversation about Mavuno HR rather than TallyPrime?
@@ -1205,8 +1250,18 @@ def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") 
         # is about Mavuno, and should not have to wait for the visitor to say
         # the word. Sniffing the history stays as the fallback, for WhatsApp
         # and anything else that cannot declare it.
-        is_mavuno = "mavuno" in (product or "").lower() or _is_mavuno_conversation(messages)
-        base_prompt = MAVUNO_SYSTEM_PROMPT if is_mavuno else ZAWADI_SYSTEM_PROMPT
+        # Optimum runs several independently-branded products on one WhatsApp
+        # number and one assistant. `product` is the caller stating outright
+        # which brand it speaks for — each website widget knows. Sniffing the
+        # history stays the fallback for WhatsApp and inbound email, which
+        # cannot declare it.
+        declared = (product or "").lower()
+        if "jamvi" in declared or _is_jamvi_conversation(messages):
+            base_prompt = JAMVI_SYSTEM_PROMPT
+        elif "mavuno" in declared or _is_mavuno_conversation(messages):
+            base_prompt = MAVUNO_SYSTEM_PROMPT
+        else:
+            base_prompt = ZAWADI_SYSTEM_PROMPT
         dynamic_prompt = (
             base_prompt
             + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). "
