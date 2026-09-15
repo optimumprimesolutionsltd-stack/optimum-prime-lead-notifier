@@ -882,9 +882,10 @@ Then collect ONLY THE DETAILS STILL MISSING, one at a time, in this order:
 1. Full name — if you already know it (from earlier in this conversation or the WHATSAPP PROFILE note below), confirm it briefly instead of asking from scratch, e.g. "I'll use {name} for this booking — is that right?"
 2. WhatsApp phone number (Kenyan format, e.g. 0712 345 678) — if this conversation is happening on WhatsApp (i.e. there is a WHATSAPP PROFILE note below), you already have their number. Do NOT ask for it — skip straight to company name, and use an empty string "" for phone in the final JSON below (our system fills it in automatically). Only ask for a phone number if there is no WHATSAPP PROFILE note at all (i.e. this is the website chat widget).
 3. Company name
-4. Preferred date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
-5. Preferred time slot (e.g. 10:00 AM, 2:00 PM)
-6. Session type: Online (Google Meet) or Physical (at our Nairobi office)
+4. Email address — ask for it plainly: "What email should I send the confirmation to?". This is how we reach them if WhatsApp does not get through, so it is worth asking for, but it is NOT compulsory. If they would rather not give one, say that is fine, use an empty string "" for email in the JSON, and carry on. Never ask twice and never hold up the booking over it.
+5. Preferred date (remind them: Mon–Fri 8AM–5PM, Sat 8AM–12PM, no Sundays or public holidays)
+6. Preferred time slot (e.g. 10:00 AM, 2:00 PM)
+7. Session type: Online (Google Meet) or Physical (at our Nairobi office)
 
 RULES:
 - Ask ONE question at a time. Do not ask multiple questions in one message. This governs how you ASK — it does not limit how much you ACCEPT: if one message from the user answers four questions, take all four and move on to the first one still outstanding.
@@ -895,7 +896,7 @@ RULES:
 - If they pick Saturday, remind them slots are 8AM–12PM only.
 - Once you have ALL 6 details, confirm them back to the user in a friendly summary and ask them to confirm.
 - After they confirm, respond with ONLY this exact JSON (no other text before or after):
-  {"booking": true, "name": "<name>", "phone": "<phone>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation|bizanalyst>"}
+  {"booking": true, "name": "<name>", "phone": "<phone>", "email": "<email, or empty string>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation|bizanalyst>"}
 - The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
 - Set requestType to "consultation" if the user chose EOS® Business Consultation, "bizanalyst" if they chose Biz Analyst Enquiry, otherwise "demo".
 - IMPORTANT: The booking is NOT immediately confirmed. Our team reviews and approves the slot. Tell the user: "We've received your request and our team will confirm your slot shortly via WhatsApp."
@@ -1146,6 +1147,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
             if parsed.get('booking'):
                 name       = parsed.get('name') or from_name or 'Unknown'
                 phone      = parsed.get('phone') or from_phone or ''
+                email      = (parsed.get('email') or '').strip()
                 company    = parsed.get('company', '')
                 demo_date  = parsed.get('demoDate', '')   # YYYY-MM-DD
                 demo_time  = parsed.get('demoTime', '')   # HH:MM 24h
@@ -1170,6 +1172,11 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                     lead_record = {
                         'name':        name,
                         'phone':       phone,
+                        # Written even when blank, so the CRM shows an empty
+                        # address rather than no field at all - the admin
+                        # panel reads this to decide whether a client can be
+                        # confirmed by email when WhatsApp does not land.
+                        'email':       email,
                         'company':     company,
                         'demoDate':    demo_date,
                         'demoTime':    demo_time,
@@ -1233,10 +1240,48 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                 except Exception as e:
                     print(f'Client notify error: {e}')
 
+                # The same acknowledgement by email, whenever we have an
+                # address. Not a nicety: WhatsApp is the only channel a bot
+                # booking had, and when it stops - a declined card hold, a
+                # paused template, a closed 24h window - the person who just
+                # booked is told nothing at all and nobody finds out.
+                booking_email_sent = False
+                if email:
+                    try:
+                        what = ('a consultation' if request_type == 'consultation'
+                                else 'a Biz Analyst session' if request_type == 'bizanalyst'
+                                else 'a TallyPrime demo')
+                        where = 'Online (Google Meet)' if demo_type == 'online' else 'At our Nairobi office'
+                        rows = [('Date', display_date), ('Time', display_time + ' (EAT)'), ('Type', where)]
+                        rows_html = ''.join(
+                            f'<tr>'
+                            f'<td style="padding:8px 0;color:{EMAIL_TEXT_DIM};font-size:14px;width:90px;">{label}</td>'
+                            f'<td style="padding:8px 0;color:{EMAIL_TEXT};font-size:15px;font-weight:600;">{html.escape(str(value))}</td>'
+                            f'</tr>' for label, value in rows)
+                        email_html = (
+                            f'<div style="background:{EMAIL_BG};padding:32px;font-family:Arial,Helvetica,sans-serif;">'
+                            f'<div style="max-width:560px;margin:0 auto;border:1px solid {EMAIL_BORDER};'
+                            f'border-radius:14px;padding:32px;">'
+                            f'<h1 style="margin:0 0 8px;color:{EMAIL_TEXT};font-size:22px;">We have your request</h1>'
+                            f'<p style="margin:0 0 24px;color:{EMAIL_TEXT_DIM};font-size:15px;line-height:1.6;">'
+                            f'Hello {html.escape(name)}, thank you for requesting {what} with Optimum Prime '
+                            f'Solutions. You asked for:</p>'
+                            f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
+                            f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
+                            f'Our team is reviewing the slot and will confirm it shortly. This is not a '
+                            f'confirmation yet.<br/>Questions? Call or WhatsApp us on +254 116 246 074.</p>'
+                            f'</div></div>')
+                        er = _send_email(email, f'We have your request — {display_date} at {display_time}', email_html)
+                        booking_email_sent = er.get('success', False)
+                    except Exception as e:
+                        print(f'Client booking email error: {e}')
+
                 return {
                     'booking': True,
                     'name': name,
                     'phone': phone,
+                    'email': email,
+                    'emailed': booking_email_sent,
                     'company': company,
                     'demoDate': demo_date,
                     'demoTime': display_time,
