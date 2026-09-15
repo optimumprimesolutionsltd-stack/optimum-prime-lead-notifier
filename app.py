@@ -1695,6 +1695,74 @@ def admin_deliveries():
         "deliveries": entries,
     })
 
+# Templates whose category is wrong for what they actually are. All four go
+# to our own staff, never to a customer, so MARKETING is both the expensive
+# tier and the wrong one: marketing messages can be declined by a recipient
+# who has opted out of promotions, which would silence a team member's lead
+# alerts silently and permanently.
+TEMPLATE_CATEGORY_FIXES = {
+    "new_lead_alert": "UTILITY",
+    "new_review_alert_": "UTILITY",
+    "whatsapp_message_alert": "UTILITY",
+    "webinar_registration_alert": "UTILITY",
+}
+
+
+@app.route("/admin/templates/category", methods=["GET", "POST"])
+def admin_template_category():
+    """
+    GET  - show each template in TEMPLATE_CATEGORY_FIXES with its current
+           category beside the intended one.
+    POST - ask Meta to recategorise the ones that differ.
+
+    A category change goes back through review. The existing template keeps
+    working in the meantime, so this is safe to run on live templates, but it
+    is a change to an approved asset and is therefore deliberately its own
+    endpoint rather than folded into the create route.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    if not META_WA_TOKEN:
+        return jsonify({"error": "META_WA_TOKEN is not set"}), 503
+
+    listing = requests.get(
+        "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+        params={"limit": 200, "access_token": META_WA_TOKEN}, timeout=20,
+    ).json()
+    if "data" not in listing:
+        return jsonify({"error": "could not list templates", "meta_response": listing}), 502
+    live = {t["name"]: t for t in listing["data"]}
+
+    results = []
+    for name, target in sorted(TEMPLATE_CATEGORY_FIXES.items()):
+        tpl = live.get(name)
+        if not tpl:
+            results.append({"name": name, "action": "missing on this WABA"})
+            continue
+        current = tpl.get("category")
+        if current == target:
+            results.append({"name": name, "category": current, "action": "already correct"})
+            continue
+        if request.method == "GET":
+            results.append({"name": name, "category": current, "would_become": target,
+                            "action": "would be changed"})
+            continue
+        r = requests.post(
+            "https://graph.facebook.com/v20.0/" + tpl["id"],
+            headers={"Authorization": "Bearer " + META_WA_TOKEN,
+                     "Content-Type": "application/json"},
+            json={"category": target}, timeout=20,
+        )
+        results.append({
+            "name": name, "was": current, "requested": target,
+            "action": "submitted" if r.status_code == 200 else "FAILED",
+            "http_status": r.status_code, "meta_response": r.json(),
+        })
+
+    return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
