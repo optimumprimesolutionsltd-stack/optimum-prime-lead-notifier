@@ -28,6 +28,14 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 META_WA_TOKEN    = os.environ.get("META_WA_TOKEN", "").strip()
 META_WA_PHONE_ID = os.environ.get("META_WA_PHONE_ID", "").strip()
 META_WA_API_URL  = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
+# The WhatsApp Business Account the templates live in, confirmed against
+# WhatsApp Manager: the sending number +254 727 209720 sits in this same
+# WABA. Two other WABAs on this business are empty — a template created in
+# one of those would look fine and never be found at send time.
+META_WABA_ID     = os.environ.get("META_WABA_ID", "1374387564578294").strip()
+# Gate for the template admin endpoint. Unset means the endpoint is off,
+# which is how it should sit when nobody is actively using it.
+TEMPLATE_ADMIN_KEY = os.environ.get("TEMPLATE_ADMIN_KEY", "").strip()
 
 # ── Resend email config ───────────────────────────────────────────────────────
 # Set in Render environment variables:
@@ -1311,6 +1319,176 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
     # escalation returns above are the end of a flow, with nothing left to tap.
     return {'reply': reply, 'handoff': False, 'quickReplies': chips}
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# Message template admin
+#
+# Two templates this service sends constantly have never existed in Meta:
+#
+#   team_alert       - six call sites (Zawadi booking, handoff and escalation
+#                      alerts, newsletter signup, and book_demo's office and
+#                      team-assignment messages). Every one of them has only
+#                      ever reached the free-text fallback.
+#   booking_received - what a customer gets the moment Zawadi takes their
+#                      booking. Someone who booked through the website widget
+#                      has never messaged us, so no 24h window is open and
+#                      Meta drops it in silence. They hear nothing at all.
+#
+# Defined here rather than clicked into WhatsApp Manager because that form is
+# six steps and the Business Suite kept failing partway through, which leaves
+# a half-saved draft behind. One POST either succeeds or it does not.
+#
+# Placeholder order is taken from the call sites, not invented - see
+# _wa_notify(..., "team_alert", [kind, name, phone, detail], ...) and
+# _wa_notify(..., "booking_received", [name, what, date, time], ...). A
+# template whose parameter count does not match is rejected by Meta and falls
+# back to free text exactly like a missing one, which is how demo_reminder
+# went undelivered without anyone noticing.
+
+TEMPLATE_DEFINITIONS = [
+    {
+        "name": "team_alert",
+        "language": "en",
+        "category": "UTILITY",
+        "components": [{
+            "type": "BODY",
+            "text": chr(10).join([
+                "🔔 New {{1}} - Optimum Prime Solutions",
+                "",
+                "Client: {{2}}",
+                "Phone: {{3}}",
+                "Details: {{4}}",
+                "",
+                "Open the admin panel to action it.",
+            ]),
+            "example": {"body_text": [[
+                "demo booking",
+                "John Mark",
+                "+254712345678",
+                "Tuesday, 15 September 2026 at 2:00 PM EAT, Online",
+            ]]},
+        }],
+    },
+    {
+        "name": "booking_received",
+        "language": "en",
+        "category": "UTILITY",
+        "components": [{
+            "type": "BODY",
+            "text": chr(10).join([
+                "Hello {{1}} 👋",
+                "",
+                "Thank you for requesting {{2}} with Optimum Prime Solutions.",
+                "",
+                "📆 Date: {{3}}",
+                "🕐 Time: {{4}} (EAT)",
+                "",
+                "Our team is reviewing your request and will confirm the slot shortly.",
+                "",
+                "Questions? Call or WhatsApp us on +254 116 246 074.",
+            ]),
+            "example": {"body_text": [[
+                "John Mark",
+                "a TallyPrime demo",
+                "Tuesday, 15 September 2026",
+                "2:00 PM",
+            ]]},
+        }],
+    },
+]
+
+
+# What each call site passes. Kept beside the definitions so the check below
+# cannot drift from the code it is checking.
+TEMPLATE_EXPECTED_PARAMS = {
+    "demo_confirmation": 4, "lead_confirmation": 2, "new_lead_alert": 4,
+    "demo_reminder": 3, "team_demo_reminder": 4, "delivery_failed_alert": 3,
+    "whatsapp_message_alert": 3, "new_review_alert_": 4,
+    "webinar_registration_alert": 4, "team_alert": 4, "booking_received": 4,
+}
+
+
+def _template_body_params(tpl: dict) -> int:
+    """Highest {{n}} in a template body - the number of parameters it wants."""
+    for c in tpl.get("components", []):
+        if c.get("type") == "BODY":
+            text = c.get("text", "")
+            highest = 0
+            for i in range(1, 11):
+                if ("{{" + str(i) + "}}") in text:
+                    highest = i
+            return highest
+    return 0
+
+
+@app.route("/admin/templates", methods=["GET", "POST"])
+def admin_templates():
+    """
+    GET  - list every template this code sends, with the placeholder count the
+           template actually has beside the count the call site passes, so a
+           mismatch is visible without counting variables by eye in the
+           WhatsApp Manager UI.
+    POST - create any template in TEMPLATE_DEFINITIONS that is not already
+           there. Never edits or deletes an existing one, and skips by name,
+           so calling it twice is safe.
+
+    Gated on TEMPLATE_ADMIN_KEY via the X-Admin-Key header. With the env var
+    unset it refuses outright rather than defaulting to open.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    if not META_WA_TOKEN:
+        return jsonify({"error": "META_WA_TOKEN is not set"}), 503
+
+    listing = requests.get(
+        "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+        params={"limit": 200, "access_token": META_WA_TOKEN}, timeout=20,
+    ).json()
+    if "data" not in listing:
+        return jsonify({"error": "could not list templates", "meta_response": listing}), 502
+    live = {t["name"]: t for t in listing["data"]}
+
+    if request.method == "GET":
+        report = []
+        for name in sorted(TEMPLATE_EXPECTED_PARAMS):
+            want = TEMPLATE_EXPECTED_PARAMS[name]
+            tpl = live.get(name)
+            if not tpl:
+                report.append({"name": name, "status": "MISSING", "code_sends": want})
+                continue
+            got = _template_body_params(tpl)
+            report.append({
+                "name": name, "status": tpl.get("status"),
+                "category": tpl.get("category"), "language": tpl.get("language"),
+                "template_has": got, "code_sends": want,
+                "verdict": "ok" if got == want else
+                           "MISMATCH - Meta rejects the send and it silently falls back to free text",
+            })
+        return jsonify({
+            "waba_id": META_WABA_ID,
+            "checked": report,
+            "on_waba_but_unused_by_code": sorted(set(live) - set(TEMPLATE_EXPECTED_PARAMS)),
+        })
+
+    results = []
+    for definition in TEMPLATE_DEFINITIONS:
+        name = definition["name"]
+        if name in live:
+            results.append({"name": name, "action": "skipped - already exists",
+                            "status": live[name].get("status")})
+            continue
+        r = requests.post(
+            "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+            headers={"Authorization": "Bearer " + META_WA_TOKEN,
+                     "Content-Type": "application/json"},
+            json=definition, timeout=20,
+        )
+        results.append({"name": name,
+                        "action": "created" if r.status_code == 200 else "FAILED",
+                        "http_status": r.status_code, "meta_response": r.json()})
+    return jsonify({"waba_id": META_WABA_ID, "results": results})
 
 @app.route("/health", methods=["GET"])
 def health():
