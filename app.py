@@ -787,6 +787,21 @@ def reply_to_lead(lead: dict) -> dict:
         template = "mavuno_lead_confirmation" if _is_mavuno_lead(lead) else "lead_confirmation"
         r = _wa_send_template(phone, template, [name, interest])
 
+        # A template Meta has not approved yet is not a reason to leave a lead
+        # unanswered. mavuno_lead_confirmation has to be created and reviewed
+        # before it can send, and between deploying the routing above and that
+        # approval landing, every Mavuno enquiry got silence — worse than the
+        # Optimum-branded reply the routing exists to replace.
+        #
+        # So: fall back to the approved template. Wrong brand beats no reply,
+        # and the moment Meta approves the Mavuno one this stops firing on its
+        # own with nothing to change here.
+        if (not r["success"]
+                and template != "lead_confirmation"
+                and r.get("code") in TEMPLATE_UNUSABLE_CODES):
+            print(f"[Meta WA] {template} unusable ({r['error']}); falling back to lead_confirmation")
+            r = _wa_send_template(phone, "lead_confirmation", [name, interest])
+
     if r["success"]:
         return {"success": True, "message_id": r["message_id"], "to": phone}
     else:
