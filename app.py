@@ -9,6 +9,7 @@ import json
 import html
 import csv
 import collections
+import itertools
 import io
 import uuid
 import hashlib
@@ -1851,6 +1852,166 @@ def admin_template_body():
 
     return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
 
+# ────────────────────────────────────────────────────────────────────────────
+# Startup self-check and delivery watchdog
+#
+# The faults this exists to catch all shared one shape: the service reported
+# the outcome it intended rather than the one it got. A send accepted with an
+# HTTP 200 and refused asynchronously. An alert address pointing at a mailbox
+# that did not exist. A template whose parameter count had drifted from its
+# call site, which Meta rejects and this code then quietly answers with free
+# text that is dropped outside the 24h window.
+#
+# None of those surfaced anywhere. All of them are checkable.
+#
+# Both report by EMAIL, never WhatsApp. An alarm that travels down the wire
+# it is monitoring cannot ring when that wire is cut - which is exactly the
+# case it exists for.
+
+REQUIRED_CONFIG = [
+    ("META_WA_TOKEN", META_WA_TOKEN, "WhatsApp cannot send at all"),
+    ("META_WA_PHONE_ID", META_WA_PHONE_ID, "WhatsApp cannot send at all"),
+    ("RESEND_API_KEY", RESEND_API_KEY, "no email can be sent, including these alerts"),
+    ("RESEND_FROM", RESEND_FROM, "email falls back to Resend's test sender"),
+    ("ADMIN_NOTIFY_EMAIL", ADMIN_NOTIFY_EMAIL, "the team gets no email alert for a new lead"),
+]
+
+
+def run_self_check() -> dict:
+    """
+    Everything checkable about whether this service can actually deliver.
+    Returns a dict of findings; empty `problems` means nothing wrong was found.
+    """
+    problems = []
+    notes = []
+
+    for name, value, consequence in REQUIRED_CONFIG:
+        if not value:
+            problems.append(name + " is not set - " + consequence)
+
+    # An alert address on a domain we cannot send from is the same as no
+    # address at all, and fails silently in exactly the same way.
+    if ADMIN_NOTIFY_EMAIL and RESEND_FROM:
+        sender_domain = RESEND_FROM.split("@")[-1].strip().rstrip(">").lower()
+        notify_domain = ADMIN_NOTIFY_EMAIL.split("@")[-1].strip().lower()
+        if sender_domain and notify_domain and sender_domain != notify_domain:
+            notes.append(
+                "Team alerts go to " + notify_domain + " but are sent from " +
+                sender_domain + " - fine if intended, worth checking if not.")
+
+    # Template parameter counts, compared against what each call site passes.
+    # A mismatch is rejected by Meta and answered with the free-text fallback,
+    # which is dropped outside an open 24h window - indistinguishable from a
+    # template that does not exist.
+    if META_WA_TOKEN:
+        try:
+            listing = requests.get(
+                "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+                params={"limit": 200, "access_token": META_WA_TOKEN}, timeout=20,
+            ).json()
+            live = {t["name"]: t for t in listing.get("data", [])}
+            if not live:
+                notes.append("Could not read the template list from Meta.")
+            for name, want in sorted(TEMPLATE_EXPECTED_PARAMS.items()):
+                tpl = live.get(name)
+                if not tpl:
+                    problems.append("Template " + name + " does not exist on this WABA.")
+                    continue
+                got = _template_body_params(tpl)
+                if got != want:
+                    problems.append(
+                        "Template " + name + " has " + str(got) + " parameters but the code sends " +
+                        str(want) + " - Meta rejects this and the message falls back to free text.")
+                if tpl.get("status") not in ("APPROVED", None):
+                    problems.append("Template " + name + " is " + str(tpl.get("status")) + ".")
+        except Exception as e:
+            notes.append("Template check could not run: " + str(e))
+
+    return {"problems": problems, "notes": notes}
+
+
+# ── Delivery watchdog ────────────────────────────────────────────────────────
+# Real traffic is the canary for most of the day: every send already produces
+# a verdict on the status webhook, so a run of failures with no successes is
+# the signal, and it costs nothing. A synthetic message is sent only when
+# there has been no traffic at all for long enough that silence has stopped
+# meaning anything - otherwise a quiet weekend would read as healthy.
+
+WATCHDOG_QUIET_HOURS = 12      # no traffic for this long -> send one probe
+WATCHDOG_MIN_FAILURES = 3      # consecutive failures before calling it broken
+WATCHDOG_ALERT_COOLDOWN = 6    # hours between repeat alerts while still broken
+_watchdog_state = {'alerted_at': None, 'healthy': True}
+
+
+def _recent_delivery_health() -> dict:
+    """Read the delivery log back: what has actually been happening lately."""
+    entries = list(WA_DELIVERY_LOG)
+    if not entries:
+        return {"attempts": 0, "failures": 0, "last_success": None, "last_attempt": None}
+    failures = [e for e in entries if e.get("error_code")]
+    successes = [e for e in entries if not e.get("error_code")]
+    return {
+        "attempts": len(entries),
+        "failures": len(failures),
+        "last_success": successes[-1]["at"] if successes else None,
+        "last_attempt": entries[-1]["at"],
+        "trailing_failures": len(list(itertools.takewhile(
+            lambda e: e.get("error_code"), reversed(entries)))),
+        "last_error": failures[-1] if failures else None,
+    }
+
+
+def _watchdog_alert(subject: str, heading: str, rows: list, footer: str) -> None:
+    """Alert by email, and remember when, so a long outage does not spam."""
+    now = datetime.now(timezone.utc)
+    last = _watchdog_state.get('alerted_at')
+    if last and (now - last).total_seconds() < WATCHDOG_ALERT_COOLDOWN * 3600:
+        return
+    _watchdog_state['alerted_at'] = now
+    _email_team(subject, heading, rows, footer)
+
+
+def check_delivery_health() -> dict:
+    """
+    Decide whether WhatsApp is working, and say so by email when it is not.
+
+    Alerts on the transition in both directions: silence while broken is no
+    use, and neither is never being told it came back.
+    """
+    h = _recent_delivery_health()
+    broken = h.get('trailing_failures', 0) >= WATCHDOG_MIN_FAILURES
+
+    if broken and _watchdog_state['healthy']:
+        _watchdog_state['healthy'] = False
+        err = h.get('last_error') or {}
+        _watchdog_alert(
+            "WhatsApp delivery is failing",
+            "WhatsApp messages are not being delivered",
+            [("Consecutive failures", h.get("trailing_failures")),
+             ("Last error", str(err.get("error_code")) + " " + str(err.get("error_message") or "")),
+             ("Detail", err.get("error_details") or ""),
+             ("Last success", h.get("last_success") or "none recorded")],
+            "Customers are not receiving confirmations. Email still works.")
+    elif not broken and not _watchdog_state['healthy'] and h.get('last_success'):
+        _watchdog_state['healthy'] = True
+        _watchdog_state['alerted_at'] = None
+        _email_team("WhatsApp delivery has recovered",
+                    "WhatsApp is delivering again",
+                    [("Last success", h.get("last_success"))],
+                    "No action needed.")
+
+    return dict(h, broken=broken)
+
+@app.route("/admin/self-check", methods=["GET"])
+def admin_self_check():
+    """Everything checkable about whether this service can deliver, on demand."""
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    checks = run_self_check()
+    return jsonify(dict(checks, delivery=_recent_delivery_health()))
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "Optimum Prime Lead Notifier"})
@@ -3005,11 +3166,46 @@ def _scheduled_posts_loop():
         except Exception:
             pass
 
+def _watchdog_loop():
+    """
+    Background thread. Runs the self-check once at startup, then watches
+    delivery health every 15 minutes.
+
+    The startup check is the one that catches a bad deploy: a template renamed,
+    an env var dropped, an alert address changed to something that does not
+    exist. All of it is knowable at boot and none of it was being looked at.
+    """
+    import time
+    time.sleep(60)  # let the service finish starting before reaching out to Meta
+    try:
+        checks = run_self_check()
+        if checks["problems"]:
+            print("[self-check] PROBLEMS: " + "; ".join(checks["problems"]))
+            _email_team(
+                "Notifier self-check found problems",
+                "Problems found at startup",
+                [("Problem " + str(i + 1), p) for i, p in enumerate(checks["problems"])],
+                "Found automatically when the service started.")
+        else:
+            print("[self-check] all clear: " + str(len(TEMPLATE_EXPECTED_PARAMS)) + " templates match their call sites")
+    except Exception as e:
+        print("[self-check] could not run: " + str(e))
+
+    while True:
+        time.sleep(15 * 60)
+        try:
+            check_delivery_health()
+        except Exception as e:
+            print("[watchdog] " + str(e))
+
 _reminder_thread = threading.Thread(target=_reminder_loop, daemon=True)
 _reminder_thread.start()
 
 _scheduled_posts_thread = threading.Thread(target=_scheduled_posts_loop, daemon=True)
 _scheduled_posts_thread.start()
+
+_watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True)
+_watchdog_thread.start()
 
 
 if __name__ == "__main__":
