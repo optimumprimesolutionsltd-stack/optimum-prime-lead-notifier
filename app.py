@@ -1156,7 +1156,7 @@ def extract_chips(reply: str) -> tuple:
     return clean, out[:MAX_CHIPS]
 
 
-def get_zawadi_reply(messages: list, contact_name: str = "") -> str:
+def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") -> str:
     """
     Call Google Gemini 2.5 Flash with the Zawadi system prompt.
 
@@ -1185,7 +1185,13 @@ def get_zawadi_reply(messages: list, contact_name: str = "") -> str:
         # same WhatsApp number, but a payroll customer should not be pitched
         # TallyPrime. Decided per reply from the history, so it survives the
         # customer dropping the product name after their opening message.
-        base_prompt = MAVUNO_SYSTEM_PROMPT if _is_mavuno_conversation(messages) else ZAWADI_SYSTEM_PROMPT
+        # `product` is the caller stating outright which brand it is speaking
+        # for — the Mavuno website widget knows every one of its conversations
+        # is about Mavuno, and should not have to wait for the visitor to say
+        # the word. Sniffing the history stays as the fallback, for WhatsApp
+        # and anything else that cannot declare it.
+        is_mavuno = "mavuno" in (product or "").lower() or _is_mavuno_conversation(messages)
+        base_prompt = MAVUNO_SYSTEM_PROMPT if is_mavuno else ZAWADI_SYSTEM_PROMPT
         dynamic_prompt = (
             base_prompt
             + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). "
@@ -2221,7 +2227,10 @@ def chat():
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
 
-    reply = get_zawadi_reply(messages)
+    # Optional: which product's site the widget is embedded in. Mavuno HR sends
+    # "mavuno" so its visitors get the Mavuno persona from the first reply,
+    # rather than only once they happen to type the product name.
+    reply = get_zawadi_reply(messages, product=str(data.get("product") or ""))
     return jsonify(process_zawadi_reply(reply))
 
 
