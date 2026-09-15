@@ -1606,8 +1606,24 @@ def admin_account():
                          str(n.get("quality_rating")) + " - throttled or at risk.")
         if n.get("status") != "CONNECTED":
             notes.append(str(n.get("display_phone_number")) + " status is " + str(n.get("status")))
+    # Which channels are actually configured. Booleans only, never values -
+    # the point is "can the team be reached at all if WhatsApp is refused",
+    # which today is not hypothetical.
+    config = {
+        "meta_wa_token_set": bool(META_WA_TOKEN),
+        "resend_api_key_set": bool(RESEND_API_KEY),
+        "admin_notify_email_set": bool(ADMIN_NOTIFY_EMAIL),
+        "admin_notify_email": ADMIN_NOTIFY_EMAIL or "(not set)",
+        "resend_from": RESEND_FROM,
+        "team_numbers": TEAM_NUMBERS,
+    }
+    if not ADMIN_NOTIFY_EMAIL:
+        notes.append(
+            "ADMIN_NOTIFY_EMAIL is not set, so the team gets NO email alert for a new lead - WhatsApp is the only channel, and it is currently refused. Setting it restores team alerts without depending on Meta.")
+
     return jsonify({
         "waba": waba,
+        "config": config,
         "phone_numbers_on_waba": numbers.get("data", numbers),
         "configured_sending_number": configured,
         "what_this_means": notes or ["No account-level blocker found in these fields."],
