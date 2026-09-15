@@ -771,14 +771,43 @@ def reply_to_lead(lead: dict) -> dict:
     if custom_msg:
         r = _wa_send(phone, custom_msg)
     else:
-        # Uses the approved `lead_confirmation` template — free text to a lead who has
-        # not messaged us in the last 24 hours is dropped.
-        r = _wa_send_template(phone, "lead_confirmation", [name, interest])
+        # Uses an approved template — free text to a lead who has not messaged
+        # us in the last 24 hours is dropped.
+        #
+        # Mavuno HR is an independent product, so its leads get a template that
+        # says Mavuno HR and points at mavunohr.co.ke. Answering a payroll
+        # enquiry with "thank you for contacting Optimum Prime Solutions" and a
+        # link to a TallyPrime site reads, to that customer, like they wrote to
+        # the wrong company.
+        #
+        # A separate template rather than parameterising the shared one: the
+        # shared body is approved and serving Tally, EOS and Biz Analyst leads
+        # today, and re-submitting it would put all of them through review to
+        # fix one product's wording.
+        template = "mavuno_lead_confirmation" if _is_mavuno_lead(lead) else "lead_confirmation"
+        r = _wa_send_template(phone, template, [name, interest])
 
     if r["success"]:
         return {"success": True, "message_id": r["message_id"], "to": phone}
     else:
         return {"success": False, "reason": r["error"], "to": phone}
+
+
+def _is_mavuno_lead(lead: dict) -> bool:
+    """
+    Did this lead come from Mavuno HR rather than the Tally side of the house?
+
+    The Mavuno app sends source "Mavuno HR - Website" and interest "Mavuno HR
+    Demo" (see lib/optimum-crm.ts in the mavuno-hr repo). Either is enough, and
+    matching loosely on the product name means a change of wording at that end
+    does not silently send the customer an Optimum-branded reply.
+    """
+    haystack = " ".join([
+        str(lead.get("source") or ""),
+        str(lead.get("interest") or ""),
+        str(lead.get("businessType") or ""),
+    ]).lower()
+    return "mavuno" in haystack
 
 
 # ── CSV Export Helpers ────────────────────────────────────────────────────────
@@ -996,6 +1025,84 @@ CONVERSATION STYLE:
 - If you know their name, use it naturally in conversation.
 """
 
+
+# ── Mavuno HR ────────────────────────────────────────────────────────────────
+# Mavuno HR is an independent product. It is ours operationally, but a Mavuno
+# customer is buying Kenyan payroll software, not a TallyPrime partner's
+# services, and telling them about EOS or eTIMS answers a question they did not
+# ask. Same assistant, same WhatsApp number, different brand in front of it:
+# the leverage is in the operations, not in making every conversation mention
+# Optimum.
+#
+# So this persona never mentions Optimum Prime Solutions or TallyPrime at all.
+# That is not secrecy — it is simply not the subject. If a customer asks who is
+# behind Mavuno HR, the honest answer below is the one to give.
+MAVUNO_SYSTEM_PROMPT = """
+You are the friendly, knowledgeable assistant for Mavuno HR — payroll and HR software built for Kenyan businesses.
+
+Your role is to answer questions about Mavuno HR and help the person decide whether to start a free trial or book a demo.
+
+ABOUT MAVUNO HR:
+- Payroll and HR for Kenyan businesses: payslips, statutory deductions, leave, employee records.
+- Handles PAYE, NSSF, SHIF and the Housing Levy, with the current rates applied automatically.
+- Produces P9 and P10 forms, muster rolls, and bank/M-Pesa payout files.
+- An employee self-service portal: payslips, leave requests, and personal details.
+- Website: www.mavunohr.co.ke
+- WhatsApp: +254 727 209 720
+- Location: Nairobi, Kenya
+
+PRICING (KES per month, billed monthly; annual billing charges 10 months for 12):
+- Free: up to 5 employees, KES 0.
+- Lite: 6-10 employees, KES 1,500.
+- Starter: 11-20 employees, KES 2,500.
+- Growth: 21-50 employees, KES 4,000.
+- Business: 51-150 employees, KES 7,000.
+- Enterprise: 150+ employees, KES 10,000.
+- Every plan is a flat fee for the band, not a per-employee charge.
+- There is a 30-day free trial, no card required. Sign up at www.mavunohr.co.ke or /app/register.
+
+GETTING STARTED:
+- Starting a trial is self-service and takes a few minutes — point people there first; it is faster than waiting for a demo.
+- A demo is half an hour, run on the customer's own numbers. Book at www.mavunohr.co.ke/demo.
+- Businesses moving from another payroll system mid-year can record earlier months as historical runs, so year-to-date figures and P9s stay complete.
+
+WHAT MAVUNO HR DOES NOT DO:
+- It does not integrate with Tally or any accounting package. If asked, say so plainly — do not imply a connection that does not exist.
+- Never invent a feature, a price, or an integration. If you are unsure, say you will have someone confirm.
+
+IF ASKED WHO IS BEHIND MAVUNO HR:
+- Mavuno HR is built and run by Optimum Prime Solutions, a Nairobi software company, and it is run as an independent product with its own team and support.
+- Only say this if you are actually asked. Do not volunteer it, and never pitch Optimum's other services — this customer came for payroll software.
+
+TONE:
+- Warm, direct, and Kenyan-professional. Short paragraphs, no walls of text.
+- One question at a time.
+- Always end with a clear next step: start the free trial, or book a demo.
+- Never quote a price you are not sure of.
+"""
+
+
+def _is_mavuno_conversation(messages: list) -> bool:
+    """
+    Is this conversation about Mavuno HR rather than TallyPrime?
+
+    Read from what the customer has actually said. The website's WhatsApp
+    button pre-fills "Hi Mavuno HR - ...", so the very first message usually
+    says so outright; checking the whole history rather than only the latest
+    turn means the persona does not flip back to Tally three messages in, when
+    they stop repeating the product name.
+
+    Only customer turns are examined. Matching on our own replies would latch
+    the moment the assistant so much as named the product.
+    """
+    for m in messages or []:
+        if m.get("role") != "user":
+            continue
+        if "mavuno" in (m.get("content") or "").lower():
+            return True
+    return False
+
+
 CHIP_MARKER = re.compile(r"\[\[\s*chips\s*:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
 MAX_CHIPS = 8
 MAX_CHIP_LEN = 40
@@ -1074,8 +1181,13 @@ def get_zawadi_reply(messages: list, contact_name: str = "") -> str:
         # Inject today's date so the AI always knows the correct year/date
         now_eat = datetime.now(timezone(timedelta(hours=3)))
         today_str = now_eat.strftime("%A, %d %B %Y")
+        # Mavuno HR conversations get the Mavuno persona: same assistant,
+        # same WhatsApp number, but a payroll customer should not be pitched
+        # TallyPrime. Decided per reply from the history, so it survives the
+        # customer dropping the product name after their opening message.
+        base_prompt = MAVUNO_SYSTEM_PROMPT if _is_mavuno_conversation(messages) else ZAWADI_SYSTEM_PROMPT
         dynamic_prompt = (
-            ZAWADI_SYSTEM_PROMPT
+            base_prompt
             + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). "
             "Always use this when calculating dates, days of the week, or referring "
             "to upcoming events. Never assume the year is 2024."
@@ -1515,7 +1627,7 @@ TEMPLATE_DEFINITIONS = [
 # What each call site passes. Kept beside the definitions so the check below
 # cannot drift from the code it is checking.
 TEMPLATE_EXPECTED_PARAMS = {
-    "demo_confirmation": 4, "lead_confirmation": 2, "new_lead_alert": 4,
+    "demo_confirmation": 4, "lead_confirmation": 2, "mavuno_lead_confirmation": 2, "new_lead_alert": 4,
     "demo_reminder": 3, "team_demo_reminder": 4, "delivery_failed_alert": 3,
     "whatsapp_message_alert": 3, "new_review_alert_": 4,
     "webinar_registration_alert": 4, "team_alert": 4, "booking_received": 4,
@@ -1851,6 +1963,86 @@ def admin_template_body():
                         "http_status": r.status_code, "meta_response": r.json()})
 
     return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
+
+# Templates that have to exist at Meta before the code above can use them.
+# Unlike TEMPLATE_BODY_FIXES, which edits an approved template, these are new
+# submissions: WhatsApp will not send a template it has not approved, so
+# /admin/templates/create has to be run once and the approval waited out
+# before Mavuno leads get this reply. Until then _wa_send_template falls back
+# to whatever Meta says about the missing name, and the failure is logged.
+TEMPLATE_CREATE = {
+    "mavuno_lead_confirmation": {
+        "category": "UTILITY",
+        "language": "en",
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Thank you for getting in touch with Mavuno HR. We've received your enquiry about {{2}} and our team will get back to you shortly.",
+            "",
+            "📞 +254 727 209 720",
+            "🌐 www.mavunohr.co.ke",
+        ]),
+        "example": ["John Mark", "Mavuno HR Demo"],
+    },
+}
+
+
+@app.route("/admin/templates/create", methods=["GET", "POST"])
+def admin_template_create():
+    """
+    GET  - show which of TEMPLATE_CREATE are missing from this WABA.
+    POST - submit the missing ones to Meta for approval.
+
+    Creating is separate from /admin/templates/body on purpose: that endpoint
+    edits templates that already exist and would report a new one as "missing
+    on this WABA" without being able to do anything about it.
+    """
+    if not TEMPLATE_ADMIN_KEY:
+        return jsonify({"error": "TEMPLATE_ADMIN_KEY is not set - endpoint disabled"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Admin-Key", ""), TEMPLATE_ADMIN_KEY):
+        return jsonify({"error": "bad or missing X-Admin-Key"}), 403
+    if not META_WA_TOKEN:
+        return jsonify({"error": "META_WA_TOKEN is not set"}), 503
+
+    listing = requests.get(
+        "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+        params={"limit": 200, "access_token": META_WA_TOKEN}, timeout=20,
+    ).json()
+    if "data" not in listing:
+        return jsonify({"error": "could not list templates", "meta_response": listing}), 502
+    live = {t["name"]: t for t in listing["data"]}
+
+    results = []
+    for name, spec in sorted(TEMPLATE_CREATE.items()):
+        if name in live:
+            results.append({"name": name, "status": live[name].get("status"),
+                            "action": "already exists"})
+            continue
+        if request.method == "GET":
+            results.append({"name": name, "action": "would be created",
+                            "body": spec["text"]})
+            continue
+        r = requests.post(
+            "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+            headers={"Authorization": "Bearer " + META_WA_TOKEN,
+                     "Content-Type": "application/json"},
+            json={
+                "name": name,
+                "category": spec["category"],
+                "language": spec["language"],
+                "components": [{
+                    "type": "BODY",
+                    "text": spec["text"],
+                    "example": {"body_text": [spec["example"]]},
+                }],
+            }, timeout=20,
+        )
+        results.append({"name": name,
+                        "action": "submitted" if r.status_code == 200 else "FAILED",
+                        "http_status": r.status_code, "meta_response": r.json()})
+
+    return jsonify({"waba_id": META_WABA_ID, "method": request.method, "results": results})
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Startup self-check and delivery watchdog
