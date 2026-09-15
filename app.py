@@ -921,6 +921,7 @@ Then collect ONLY THE DETAILS STILL MISSING, one at a time, in this order:
 7. Session type: Online (Google Meet) or Physical (at our Nairobi office)
 
 RULES:
+- NEVER send the booking JSON without a way to contact them. On the website widget that means a phone number or an email address - at least one, and ask for the phone first. On WhatsApp you already have their number, so that condition is met. A booking with neither is a person our team cannot call, cannot email, and cannot confirm a slot with: it is worse than no booking, because it looks handled. If they refuse both, do not send the JSON - point them at www.optimumprimesolutions.co.ke/contact#demo-form instead.
 - Ask ONE question at a time. Do not ask multiple questions in one message. This governs how you ASK — it does not limit how much you ACCEPT: if one message from the user answers four questions, take all four and move on to the first one still outstanding.
 - If a single message completes every detail you need, do not ask anything further — go straight to the summary and ask them to confirm.
 - Keep a running tally of what you have. Before each question, ask yourself "do I already have this?" — if yes, skip it.
@@ -1231,12 +1232,24 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                 try:
                     req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo')
                     req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
+                    # Whatever we can actually reach them on. Zawadi is meant to collect a
+                    # phone on the website widget; when it does not, this alert read
+                    # 'Phone: not provided' with no hint that an email had been given - so a
+                    # perfectly contactable lead looked unreachable.
+                    contact = phone or email or ''
+                    contact_lines = ''
+                    if phone:
+                        contact_lines += f'📞 *Phone:* {phone}\n'
+                    if email:
+                        contact_lines += f'📧 *Email:* {email}\n'
+                    if not contact:
+                        contact_lines = '⚠️ *No phone or email captured* - open the chat to follow up.\n'
                     office_body = (
                         f'🤖 *New {req_title} Request via Zawadi*\n\n'
                         f'📌 *Request type:* {req_label}\n'
                         f'👤 *Client:* {name}\n'
                         f'🏢 *Company:* {company}\n'
-                        f'📞 *Phone:* {phone}\n'
+                        f'{contact_lines}'
                         f'📆 *Preferred Date:* {display_date}\n'
                         f'🕐 *Preferred Time:* {display_time} (EAT)\n'
                         f'📌 *Session type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
@@ -1245,7 +1258,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                     )
                     for team_num in TEAM_NUMBERS:
                         _wa_notify(team_num, "team_alert",
-                                   [f"{req_title.lower()} request", name, phone,
+                                   [f"{req_title.lower()} request", name, contact,
                                     f"{display_date} at {display_time} EAT, pending confirmation"],
                                    office_body)
                 except Exception as e:
