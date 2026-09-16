@@ -1189,6 +1189,27 @@ def _is_mavuno_conversation(messages: list) -> bool:
     return False
 
 
+def _resolve_zawadi_persona(messages: list, product: str = "") -> str:
+    """
+    Which independently-branded product this conversation is speaking for:
+    "jamvi", "mavuno", or "tally" (the original Zawadi persona, and the
+    default when neither of the others is declared or detected).
+
+    Shared by get_zawadi_reply (picks the system prompt) and
+    process_zawadi_reply (picks the product name, template and contact
+    details in a booking confirmation) so the two can never disagree about
+    which brand is talking -- which is exactly how a Mavuno HR client ended
+    up told "Your TallyPrime demo is confirmed": the booking side had no way
+    to know the conversation was ever about anything but Tally.
+    """
+    declared = (product or "").lower()
+    if "jamvi" in declared or _is_jamvi_conversation(messages):
+        return "jamvi"
+    if "mavuno" in declared or _is_mavuno_conversation(messages):
+        return "mavuno"
+    return "tally"
+
+
 CHIP_MARKER = re.compile(r"\[\[\s*chips\s*:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
 MAX_CHIPS = 8
 MAX_CHIP_LEN = 40
@@ -1281,13 +1302,11 @@ def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") 
         # which brand it speaks for — each website widget knows. Sniffing the
         # history stays the fallback for WhatsApp and inbound email, which
         # cannot declare it.
-        declared = (product or "").lower()
-        if "jamvi" in declared or _is_jamvi_conversation(messages):
-            base_prompt = JAMVI_SYSTEM_PROMPT
-        elif "mavuno" in declared or _is_mavuno_conversation(messages):
-            base_prompt = MAVUNO_SYSTEM_PROMPT
-        else:
-            base_prompt = ZAWADI_SYSTEM_PROMPT
+        persona = _resolve_zawadi_persona(messages, product)
+        base_prompt = {
+            "jamvi": JAMVI_SYSTEM_PROMPT,
+            "mavuno": MAVUNO_SYSTEM_PROMPT,
+        }.get(persona, ZAWADI_SYSTEM_PROMPT)
         dynamic_prompt = (
             base_prompt
             + f"\n\nCURRENT DATE: Today is {today_str} (East Africa Time). "
@@ -1345,7 +1364,7 @@ def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") 
         return "I'm having a little trouble connecting right now. Please reach us directly on WhatsApp at +254 116 246 074 or visit www.optimumprimesolutions.co.ke"
 
 
-def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") -> dict:
+def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", persona: str = "tally") -> dict:
     """
     Detect whether Zawadi's reply is a booking/handoff/escalate JSON payload and,
     if so, run the same side effects (Firebase save, team alert, client
@@ -1356,6 +1375,16 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
     `from_phone`/`from_name` are the known WhatsApp sender identity (unavailable
     for the website widget) — used for the `escalate` signal, which doesn't ask
     Zawadi to collect contact details since WhatsApp already provides them.
+
+    `persona` is the same "jamvi"/"mavuno"/"tally" value get_zawadi_reply
+    resolved for this conversation (see _resolve_zawadi_persona) — every
+    caller computes it from the same messages before calling either function,
+    so the two never disagree. Only the booking branch below uses it: neither
+    the Mavuno nor the Jamvi system prompt ever instructs Gemini to emit a
+    booking JSON (that schema lives in ZAWADI_SYSTEM_PROMPT only), so this is
+    a safety net for the case persona detection itself falls through to
+    "tally" — otherwise a real Mavuno HR client could still be told "Your
+    TallyPrime demo is confirmed", which is exactly the bug this closes.
     """
     import json as _json
 
@@ -1404,6 +1433,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                 request_type = parsed.get('requestType', 'demo').lower()
 
                 norm_phone = normalize_phone(phone)
+                is_mavuno  = persona == "mavuno"
 
                 try:
                     dt = datetime.strptime(demo_date, '%Y-%m-%d')
@@ -1439,13 +1469,22 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                         'capturedVia': 'Zawadi chatbot booking',
                         'message':     f'Preferred: {display_date} at {display_time} ({demo_type}) — {"Consultation" if request_type == "consultation" else "Demo"}',
                         'createdAt':   datetime.now(timezone.utc).isoformat(),
+                        'product':     persona,
                     }
                     requests.post(FIREBASE_LEADS_URL, json=lead_record, headers=_firebase_auth_headers(), timeout=5)
                 except Exception as e:
                     print(f'Firebase save error: {e}')
 
                 try:
-                    req_label = '🤝 Consultation (EOS®)' if request_type == 'consultation' else ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo')
+                    # Consultation/Biz Analyst are Tally-side request types that
+                    # MAVUNO_SYSTEM_PROMPT never asks Gemini to produce — but this
+                    # branch is a safety net for exactly the case where a Mavuno
+                    # conversation somehow reached the Tally booking schema, so it
+                    # still names the right product rather than assuming the type
+                    # implies it.
+                    req_label = '📊 Mavuno HR Demo' if is_mavuno else (
+                        '🤝 Consultation (EOS®)' if request_type == 'consultation' else
+                        ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo'))
                     req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
                     # Whatever we can actually reach them on. Zawadi is meant to collect a
                     # phone on the website widget; when it does not, this alert read
@@ -1496,20 +1535,29 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                 # came from the website widget — a WhatsApp-originated booking already
                 # has this reply text delivered directly as the bot's response.
                 try:
+                    # booking_received's approved Meta body hardcodes "with
+                    # Optimum Prime Solutions" and the Tally phone number as
+                    # fixed text, not parameters -- same problem lead_confirmation
+                    # and demo_confirmation had, so a Mavuno booking gets its own
+                    # template rather than a wrong-branded shared one.
+                    what = "a Mavuno HR demo" if is_mavuno else (
+                        "a consultation" if request_type == "consultation" else "a TallyPrime demo")
+                    contact_phone = "+254 727 209 720" if is_mavuno else "+254 116 246 074"
                     client_body = (
                         f'Hello {name}! 👋\n\n'
-                        f'Thank you for requesting a TallyPrime demo. We have received your preferred slot:\n\n'
-                        f'📆 *Date:* {display_date}\n'
+                        + (f'Thank you for requesting {what}. We have received your preferred slot:\n\n'
+                           if is_mavuno else
+                           f'Thank you for requesting a TallyPrime demo. We have received your preferred slot:\n\n')
+                        + f'📆 *Date:* {display_date}\n'
                         f'🕐 *Time:* {display_time} (EAT)\n'
                         f'📌 *Type:* {"🌐 Online" if demo_type == "online" else "🤝 Physical"}\n\n'
                         f'Our team is reviewing your request and will confirm the slot shortly. '
                         f'You will receive a confirmation message with all the details once approved.\n\n'
-                        f'Questions? Call or WhatsApp us: +254 116 246 074'
+                        f'Questions? Call or WhatsApp us: {contact_phone}'
                     )
-                    _wa_notify(norm_phone, "booking_received",
-                               [name,
-                                "a consultation" if request_type == "consultation" else "a TallyPrime demo",
-                                display_date, display_time],
+                    booking_template = "mavuno_booking_received" if is_mavuno else "booking_received"
+                    _wa_notify(norm_phone, booking_template,
+                               [name, what, display_date, display_time],
                                client_body)
                 except Exception as e:
                     print(f'Client notify error: {e}')
@@ -1522,9 +1570,17 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                 booking_email_sent = False
                 if email:
                     try:
-                        what = ('a consultation' if request_type == 'consultation'
-                                else 'a Biz Analyst session' if request_type == 'bizanalyst'
-                                else 'a TallyPrime demo')
+                        if is_mavuno:
+                            email_what = 'a Mavuno HR demo'
+                            email_intro = f'Hello {html.escape(name)}, thank you for requesting {email_what}. You asked for:</p>'
+                            email_phone = '+254 727 209 720'
+                        else:
+                            email_what = ('a consultation' if request_type == 'consultation'
+                                    else 'a Biz Analyst session' if request_type == 'bizanalyst'
+                                    else 'a TallyPrime demo')
+                            email_intro = (f'Hello {html.escape(name)}, thank you for requesting {email_what} with Optimum Prime '
+                                           f'Solutions. You asked for:</p>')
+                            email_phone = '+254 116 246 074'
                         where = 'Online (Google Meet)' if demo_type == 'online' else 'At our Nairobi office'
                         rows = [('Date', display_date), ('Time', display_time + ' (EAT)'), ('Type', where)]
                         rows_html = ''.join(
@@ -1538,12 +1594,11 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                             f'border-radius:14px;padding:32px;">'
                             f'<h1 style="margin:0 0 8px;color:{EMAIL_TEXT};font-size:22px;">We have your request</h1>'
                             f'<p style="margin:0 0 24px;color:{EMAIL_TEXT_DIM};font-size:15px;line-height:1.6;">'
-                            f'Hello {html.escape(name)}, thank you for requesting {what} with Optimum Prime '
-                            f'Solutions. You asked for:</p>'
+                            f'{email_intro}'
                             f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
                             f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
                             f'Our team is reviewing the slot and will confirm it shortly. This is not a '
-                            f'confirmation yet.<br/>Questions? Call or WhatsApp us on +254 116 246 074.</p>'
+                            f'confirmation yet.<br/>Questions? Call or WhatsApp us on {email_phone}.</p>'
                             f'</div></div>')
                         er = _send_email(email, f'We have your request — {display_date} at {display_time}', email_html)
                         booking_email_sent = er.get('success', False)
@@ -1563,7 +1618,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "") 
                     'reply': (
                         f"✅ Thank you, {name}! We've received your demo request for {display_date} at {display_time}. "
                         f"Our team will review and confirm your slot shortly — you'll get a WhatsApp message once it's confirmed. "
-                        f"Questions? Call us on +254 116 246 074."
+                        f"Questions? Call us on {'+254 727 209 720' if is_mavuno else '+254 116 246 074'}."
                     )
                 }
 
@@ -1730,7 +1785,7 @@ TEMPLATE_DEFINITIONS = [
 # cannot drift from the code it is checking.
 TEMPLATE_EXPECTED_PARAMS = {
     "demo_confirmation": 4, "lead_confirmation": 2, "mavuno_lead_confirmation": 2, "new_lead_alert": 4,
-    "mavuno_demo_confirmation": 4,
+    "mavuno_demo_confirmation": 4, "mavuno_booking_received": 4,
     "demo_reminder": 3, "team_demo_reminder": 4, "delivery_failed_alert": 3,
     "whatsapp_message_alert": 3, "new_review_alert_": 4,
     "webinar_registration_alert": 4, "team_alert": 4, "booking_received": 4,
@@ -2110,6 +2165,31 @@ TEMPLATE_CREATE = {
         ]),
         "example": ["John Mark", "Tuesday, 15 September 2026", "2:00 PM", "Join here: https://meet.google.com/abc-defg-hij"],
     },
+    # Same problem, third occurrence: booking_received's approved body
+    # hardcodes "with Optimum Prime Solutions" and the Tally phone number as
+    # fixed text (not parameters), so even passing "a Mavuno HR demo" as
+    # {{2}} would still read "...with Optimum Prime Solutions". This is what
+    # the Zawadi chatbot's own inline booking flow sends -- normally only
+    # reachable via ZAWADI_SYSTEM_PROMPT's booking schema, which the Mavuno
+    # and Jamvi prompts never instruct Gemini to use, but persona detection
+    # is a heuristic and this is the fallback if it ever misses.
+    "mavuno_booking_received": {
+        "category": "UTILITY",
+        "language": "en",
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Thank you for requesting {{2}} with Mavuno HR.",
+            "",
+            "📆 Date: {{3}}",
+            "🕐 Time: {{4}} (EAT)",
+            "",
+            "Our team is reviewing your request and will confirm the slot shortly.",
+            "",
+            "Questions? Call or WhatsApp us on +254 727 209 720.",
+        ]),
+        "example": ["John Mark", "a Mavuno HR demo", "Tuesday, 15 September 2026", "2:00 PM"],
+    },
 }
 
 
@@ -2350,8 +2430,10 @@ def chat():
     # Optional: which product's site the widget is embedded in. Mavuno HR sends
     # "mavuno" so its visitors get the Mavuno persona from the first reply,
     # rather than only once they happen to type the product name.
-    reply = get_zawadi_reply(messages, product=str(data.get("product") or ""))
-    return jsonify(process_zawadi_reply(reply))
+    declared_product = str(data.get("product") or "")
+    reply = get_zawadi_reply(messages, product=declared_product)
+    persona = _resolve_zawadi_persona(messages, declared_product)
+    return jsonify(process_zawadi_reply(reply, persona=persona))
 
 
 @app.route("/webhook/meta-status", methods=["GET", "POST"])
@@ -2503,7 +2585,8 @@ def meta_status_webhook():
 
                     try:
                         zawadi_reply = get_zawadi_reply(gemini_messages, contact_name=contact_name)
-                        result = process_zawadi_reply(zawadi_reply, from_phone=f"+{from_number}", from_name=contact_name)
+                        persona = _resolve_zawadi_persona(gemini_messages)
+                        result = process_zawadi_reply(zawadi_reply, from_phone=f"+{from_number}", from_name=contact_name, persona=persona)
                         reply_text = result.get("reply") or zawadi_reply
                         _wa_send(from_number, reply_text, name=contact_name, force_log=True)
 
@@ -2582,8 +2665,10 @@ def resend_inbound_webhook():
         return "", 200
 
     try:
-        zawadi_reply = get_zawadi_reply([{"role": "user", "content": f"Subject: {subject}\n\n{body_text}"}])
-        result = process_zawadi_reply(zawadi_reply)
+        inbound_messages = [{"role": "user", "content": f"Subject: {subject}\n\n{body_text}"}]
+        zawadi_reply = get_zawadi_reply(inbound_messages)
+        persona = _resolve_zawadi_persona(inbound_messages)
+        result = process_zawadi_reply(zawadi_reply, persona=persona)
         reply_text = result.get("reply") or zawadi_reply
 
         reply_html = f"""
