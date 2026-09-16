@@ -482,11 +482,15 @@ def generate_meet_link(name: str, company: str, date_str: str, time_slot: str) -
 
 # ── Google Calendar Link Builder ──────────────────────────────────────────────
 
-def build_google_calendar_link(name: str, company: str, date_str: str, time_slot: str) -> str:
+def build_google_calendar_link(name: str, company: str, date_str: str, time_slot: str, is_mavuno: bool = False) -> str:
     """
-    Build a Google Calendar 'Add to Calendar' link for a 1-hour TallyPrime demo.
+    Build a Google Calendar 'Add to Calendar' link for a 1-hour demo.
     time_slot format: "10:00 AM – 11:00 AM"
     date_str format:  "2026-07-15"
+
+    Named "TallyPrime Demo" unconditionally until this was found alongside
+    the WhatsApp/email TallyPrime hardcoding — a Mavuno HR client's calendar
+    invite said the same wrong product.
     """
     if not date_str or not time_slot:
         return ""
@@ -509,8 +513,12 @@ def build_google_calendar_link(name: str, company: str, date_str: str, time_slot
             return d.strftime("%Y%m%dT%H%M%SZ")
 
         client_label = company if company else name
-        title    = urllib.parse.quote(f"TallyPrime Demo — {client_label}")
-        details  = urllib.parse.quote(f"TallyPrime demo | Optimum Prime Solutions | +254116246074")
+        if is_mavuno:
+            title   = urllib.parse.quote(f"Mavuno HR Demo — {client_label}")
+            details = urllib.parse.quote("Mavuno HR demo | +254727209720")
+        else:
+            title   = urllib.parse.quote(f"TallyPrime Demo — {client_label}")
+            details = urllib.parse.quote("TallyPrime demo | Optimum Prime Solutions | +254116246074")
         location = urllib.parse.quote("Google Meet")
 
         return (
@@ -821,6 +829,24 @@ def _is_mavuno_lead(lead: dict) -> bool:
         str(lead.get("source") or ""),
         str(lead.get("interest") or ""),
         str(lead.get("businessType") or ""),
+    ]).lower()
+    return "mavuno" in haystack
+
+
+def _is_mavuno_booking(data: dict) -> bool:
+    """
+    Same question as _is_mavuno_lead, for /book-demo instead of /new-lead.
+
+    That form's payload has its own field names -- there is no shared "lead"
+    shape between a website enquiry and a manually-booked demo -- so this
+    checks `product` (the admin panel's own selector, added once this bug was
+    found: the booking tool predates Mavuno HR and always assumed Tally) plus
+    `source` and `clientCompany` as a safety net for callers that don't set it.
+    """
+    haystack = " ".join([
+        str(data.get("product") or ""),
+        str(data.get("source") or ""),
+        str(data.get("clientCompany") or ""),
     ]).lower()
     return "mavuno" in haystack
 
@@ -1704,6 +1730,7 @@ TEMPLATE_DEFINITIONS = [
 # cannot drift from the code it is checking.
 TEMPLATE_EXPECTED_PARAMS = {
     "demo_confirmation": 4, "lead_confirmation": 2, "mavuno_lead_confirmation": 2, "new_lead_alert": 4,
+    "mavuno_demo_confirmation": 4,
     "demo_reminder": 3, "team_demo_reminder": 4, "delivery_failed_alert": 3,
     "whatsapp_message_alert": 3, "new_review_alert_": 4,
     "webinar_registration_alert": 4, "team_alert": 4, "booking_received": 4,
@@ -2059,6 +2086,29 @@ TEMPLATE_CREATE = {
             "🌐 www.mavunohr.co.ke",
         ]),
         "example": ["John Mark", "Mavuno HR Demo"],
+    },
+    # /book-demo's client confirmation used the shared `demo_confirmation`
+    # template unconditionally, which has no product parameter at all and
+    # (like lead_confirmation before it) hardcodes "TallyPrime" as fixed text
+    # -- so a Mavuno HR client who had a demo booked through the internal
+    # admin tool got told "Your TallyPrime demo is confirmed". Same fix as
+    # mavuno_lead_confirmation: a separate approved template rather than
+    # editing the shared one, which is correctly serving real Tally bookings.
+    "mavuno_demo_confirmation": {
+        "category": "UTILITY",
+        "language": "en",
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Your Mavuno HR demo is confirmed:",
+            "",
+            "📆 Date: {{2}}",
+            "🕐 Time: {{3}} (EAT)",
+            "📌 {{4}}",
+            "",
+            "Questions? Call or WhatsApp us: +254 727 209 720",
+        ]),
+        "example": ["John Mark", "Tuesday, 15 September 2026", "2:00 PM", "Join here: https://meet.google.com/abc-defg-hij"],
     },
 }
 
@@ -2871,6 +2921,7 @@ def book_demo():
     team3_name     = data.get("teamMember3Name", "")
     team3_phone    = data.get("teamMember3Phone", "")
     source         = data.get("source", "admin_booking")
+    is_mavuno      = _is_mavuno_booking(data)
     notify_client  = data.get("notifyClient", True)
     # Defaults ON, and read as "unless you said not to". WhatsApp is the only
     # channel this used to try, and outside the 24h window that a customer's
@@ -2945,9 +2996,10 @@ def book_demo():
         elif not norm_phone.startswith("+"):
             norm_phone = "+254" + norm_phone
 
+        product_label = "Mavuno HR" if is_mavuno else "TallyPrime"
         team_body = (
             f"📅 *Demo Assignment — Optimum Prime Solutions*\n\n"
-            f"Hi {name}! You've been assigned a TallyPrime demo:\n\n"
+            f"Hi {name}! You've been assigned a {product_label} demo:\n\n"
             f"👤 *Client:* {client_name}\n"
             f"🏢 *Company:* {client_company}\n"
             f"📞 *Client phone:* {client_phone}\n"
@@ -3013,15 +3065,33 @@ def book_demo():
         else:
             details = f"Our office: {demo_location}" if demo_location else "Location details to follow"
 
-        client_fallback_body = (
-            f"Hello {client_name}! 👋\n\n"
-            f"Your TallyPrime demo with Optimum Prime Solutions is confirmed:\n\n"
-            f"📆 *Date:* {display_date}\n"
-            f"🕐 *Time:* {display_time} (EAT)\n"
-            f"📌 *{details}*\n\n"
-            f"Questions? Call or WhatsApp us: +254 116 246 074"
-        )
-        r = _wa_notify(norm_client, "demo_confirmation", [client_name, display_date, display_time, details], client_fallback_body, name=client_name)
+        # demo_confirmation has no product parameter at all and hardcodes
+        # "TallyPrime" as fixed text in its approved Meta body — this booking
+        # tool predates Mavuno HR, so it always used that template regardless
+        # of which product the demo was actually for. A real Mavuno HR client
+        # got "Your TallyPrime demo is confirmed". mavuno_demo_confirmation
+        # (and this fallback text) name the right product; both templates
+        # still take the same [name, date, time, details] parameters.
+        if is_mavuno:
+            client_fallback_body = (
+                f"Hello {client_name}! 👋\n\n"
+                f"Your Mavuno HR demo is confirmed:\n\n"
+                f"📆 *Date:* {display_date}\n"
+                f"🕐 *Time:* {display_time} (EAT)\n"
+                f"📌 *{details}*\n\n"
+                f"Questions? Call or WhatsApp us: +254 727 209 720"
+            )
+        else:
+            client_fallback_body = (
+                f"Hello {client_name}! 👋\n\n"
+                f"Your TallyPrime demo with Optimum Prime Solutions is confirmed:\n\n"
+                f"📆 *Date:* {display_date}\n"
+                f"🕐 *Time:* {display_time} (EAT)\n"
+                f"📌 *{details}*\n\n"
+                f"Questions? Call or WhatsApp us: +254 116 246 074"
+            )
+        client_template = "mavuno_demo_confirmation" if is_mavuno else "demo_confirmation"
+        r = _wa_notify(norm_client, client_template, [client_name, display_date, display_time, details], client_fallback_body, name=client_name)
         results["client"] = {
             "to": norm_client,
             "message_id": r.get("message_id", ""),
@@ -3041,7 +3111,7 @@ def book_demo():
     # was the WhatsApp one above — and when that was dropped, the person who
     # booked a demo heard nothing at all about the date and time we'd agreed.
     if notify_client and notify_email and client_email:
-        cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time)
+        cal_link = build_google_calendar_link(client_name, client_company, demo_date, demo_time, is_mavuno=is_mavuno)
         if demo_type == "online":
             where_label = "Google Meet"
             where_value = (f'<a href="{meet_link}" style="color:{EMAIL_ACCENT};">{meet_link}</a>'
@@ -3075,15 +3145,21 @@ def book_demo():
             f'border-radius:14px;padding:32px;">'
             f'<h1 style="margin:0 0 8px;color:{EMAIL_TEXT};font-size:22px;">Your demo is confirmed</h1>'
             f'<p style="margin:0 0 24px;color:{EMAIL_TEXT_DIM};font-size:15px;line-height:1.6;">'
-            f'Hello {client_name}, your TallyPrime demo with Optimum Prime Solutions is booked. '
-            f'Here are the details:</p>'
-            f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
+            + (f'Hello {client_name}, your Mavuno HR demo is booked. Here are the details:</p>'
+               if is_mavuno else
+               f'Hello {client_name}, your TallyPrime demo with Optimum Prime Solutions is booked. '
+               f'Here are the details:</p>')
+            + f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
             f'{cal_html}'
             f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
-            f'Need to change the time? Reply to this email or WhatsApp us on +254 116 246 074.</p>'
-            f'</div></div>'
+            + (f'Need to change the time? Reply to this email or WhatsApp us on +254 727 209 720.</p>'
+               if is_mavuno else
+               f'Need to change the time? Reply to this email or WhatsApp us on +254 116 246 074.</p>')
+            + f'</div></div>'
         )
-        er = _send_email(client_email, f"Your TallyPrime demo — {display_date} at {display_time}", email_html)
+        email_subject = (f"Your Mavuno HR demo — {display_date} at {display_time}" if is_mavuno
+                          else f"Your TallyPrime demo — {display_date} at {display_time}")
+        er = _send_email(client_email, email_subject, email_html)
         results["client_email"] = {"to": client_email, "success": er["success"], "error": er.get("error", "")}
 
     # ── Save booking to Firebase ─────────────────────────────────────────────
@@ -3107,6 +3183,9 @@ def book_demo():
             "bookedAt": datetime.now(timezone.utc).isoformat(),
             "source": source,
             "status": "scheduled",
+            # Read by the 2-hour reminder job so it can brand that message
+            # correctly too, instead of re-deriving product from `source`.
+            "product": "mavuno" if is_mavuno else "tally",
         }
         firebase_demos_url = f"{FIREBASE_BASE}/booked_demos.json"
         requests.post(firebase_demos_url, json=booking_record, headers=_firebase_auth_headers(), timeout=5)
