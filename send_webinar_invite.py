@@ -28,7 +28,7 @@ invite_message = (
     f"Spots are limited — secure yours today!\n\n"
     f"📞 *+254 116 246 074*\n"
     f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-    f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
+    f"_Optimum Prime Solutions — TallyPrime · Cloud · Biz Analyst_"
 )
 
 payload = {

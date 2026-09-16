@@ -60,7 +60,7 @@ def build_reminder(name: str) -> str:
         f"We look forward to seeing you shortly!\n\n"
         f"📞 *+254 116 246 074*\n"
         f"🌐 *www.optimumprimesolutions.co.ke*\n\n"
-        f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS® · HubSpot CRM · Biz Analyst_"
+        f"_Optimum Prime Solutions — TallyPrime · Cloud · Biz Analyst_"
     )
 
 # ── Main ──────────────────────────────────────────────────────────────────────

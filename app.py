@@ -930,7 +930,7 @@ Your role is to help business owners and managers in Kenya discover the right so
 
 ABOUT OPTIMUM PRIME SOLUTIONS:
 - Kenya's certified TallyPrime partner
-- Services: TallyPrime accounting software, Cloud Hosting, EOS® Business Consulting, Biz Analyst
+- Services: TallyPrime accounting software, Cloud Hosting, Biz Analyst
 - Phone: +254 116 246 074
 - Website: www.optimumprimesolutions.co.ke
 - Location: Nairobi, Kenya
@@ -948,13 +948,6 @@ CLOUD HOSTING:
 - Ideal for businesses with remote teams, multiple branches, or staff working from home.
 - Eliminates the risk of data loss from hardware failure.
 
-EOS® (ENTREPRENEURIAL OPERATING SYSTEM):
-- A proven business management framework used by thousands of companies globally.
-- Helps leadership teams get clarity on Vision, Traction, and Team Health.
-- Tools include: Level 10 Meetings, Scorecards, Rocks (quarterly priorities), People Analyser.
-- Ideal for SMEs with 10–250 employees that want structured, accountable growth.
-- Optimum Prime Solutions is a certified EOS Implementer.
-
 BIZ ANALYST:
 - Mobile business analytics app that connects to TallyPrime.
 - View real-time sales, inventory, and financial reports on your phone.
@@ -970,12 +963,11 @@ COMMON CUSTOMER PROFILES:
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
 - Businesses with 1–200+ employees.
 
-BOOKING MANDATE — DEMO, CONSULTATION, OR BIZ ANALYST:
-You have full authority to collect booking requests on behalf of Optimum Prime Solutions. When a user wants to book, schedule, or says anything like "book", "I want to see it", "show me", "interested", "let's proceed", "consultation", "EOS", "biz analyst", "analytics", first ask:
+BOOKING MANDATE — DEMO OR BIZ ANALYST:
+You have full authority to collect booking requests on behalf of Optimum Prime Solutions. When a user wants to book, schedule, or says anything like "book", "I want to see it", "show me", "interested", "let's proceed", "biz analyst", "analytics", first ask:
 "What would you like to book?
 1️⃣ *TallyPrime Demo* — see the accounting software in action
-2️⃣ *EOS® Business Consultation* — a 90-min session on the Entrepreneurial Operating System
-3️⃣ *Biz Analyst Enquiry* — learn how Biz Analyst integrates with TallyPrime for business intelligence"
+2️⃣ *Biz Analyst Enquiry* — learn how Biz Analyst integrates with TallyPrime for business intelligence"
 
 FIRST, TAKE WHAT THEY HAVE ALREADY GIVEN YOU. Before you ask anything, re-read the whole conversation and pull out every booking detail the user has already supplied — including several in a single message, and including ones they volunteered before you asked. People often write "Hi, I'm James Mwangi from Acme Ltd, 0712 345 678, can we do Tuesday at 10am online?" — that is five of the six details. Treat every one of them as collected.
 
@@ -1003,7 +995,7 @@ RULES:
 - After they confirm, respond with ONLY this exact JSON (no other text before or after):
   {"booking": true, "name": "<name>", "phone": "<phone>", "email": "<email, or empty string>", "company": "<company>", "demoDate": "<YYYY-MM-DD>", "demoTime": "<HH:MM>", "demoType": "<online|physical>", "requestType": "<demo|consultation|bizanalyst>"}
 - The demoDate MUST be in YYYY-MM-DD format. The demoTime MUST be in 24-hour HH:MM format (e.g. 10:00, 14:30).
-- Set requestType to "consultation" if the user chose EOS® Business Consultation, "bizanalyst" if they chose Biz Analyst Enquiry, otherwise "demo".
+- Set requestType to "bizanalyst" if the user chose Biz Analyst Enquiry, otherwise "demo".
 - IMPORTANT: The booking is NOT immediately confirmed. Our team reviews and approves the slot. Tell the user: "We've received your request and our team will confirm your slot shortly via WhatsApp."
 - Do NOT tell the user the demo is confirmed or give them a Meet link — that comes later from our team.
 - If the user declines to provide any detail, offer the website form: www.optimumprimesolutions.co.ke/contact#demo-form
@@ -1021,7 +1013,7 @@ If this is the website widget (no WHATSAPP PROFILE note) and the user declines t
 "No problem! You can reach us anytime on WhatsApp at +254 727 209 720 or book a demo at www.optimumprimesolutions.co.ke/contact#demo-form"
 
 PROACTIVE ESCALATION (different from the handoff above — this is YOUR call, not the user's request):
-Sometimes you should hand off even though the user never asked for a person — for example: they've asked essentially the same question 2+ times without a satisfying answer, they express frustration ("this isn't helping", "you don't understand", "forget it", "never mind"), their question is genuinely outside TallyPrime / Cloud Hosting / EOS® / Biz Analyst and you cannot help, or the conversation is clearly going in circles.
+Sometimes you should hand off even though the user never asked for a person — for example: they've asked essentially the same question 2+ times without a satisfying answer, they express frustration ("this isn't helping", "you don't understand", "forget it", "never mind"), their question is genuinely outside TallyPrime / Cloud Hosting / Biz Analyst and you cannot help, or the conversation is clearly going in circles.
 When that happens, respond with ONLY this exact JSON (no other text before or after):
 {"escalate": true, "reason": "<brief description, e.g. 'user frustrated after repeated pricing questions'>"}
 Do NOT use this for questions you CAN answer — only when you genuinely cannot help further. This is rare; most conversations should not trigger it.
@@ -1049,7 +1041,7 @@ Rules for the marker:
 - The customer never sees the marker itself, so never mention buttons, never describe them, and never repeat the options in your text as well.
 
 Examples:
-  "What would you like to book?" → [[chips: TallyPrime Demo | EOS® Consultation | Biz Analyst]]
+  "What would you like to book?" → [[chips: TallyPrime Demo | Biz Analyst]]
   "Would you like this online or at our Nairobi office?" → [[chips: Online | Physical]]
   "Which day suits you?" → [[chips:dates]]
   "What time works on that day?" → [[chips:times:2026-09-15]]
@@ -1483,7 +1475,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", 
                     # still names the right product rather than assuming the type
                     # implies it.
                     req_label = '📊 Mavuno HR Demo' if is_mavuno else (
-                        '🤝 Consultation (EOS®)' if request_type == 'consultation' else
+                        '🤝 Consultation' if request_type == 'consultation' else
                         ('📱 Biz Analyst Enquiry' if request_type == 'bizanalyst' else '📊 TallyPrime Demo'))
                     req_title = 'Consultation' if request_type == 'consultation' else ('Biz Analyst' if request_type == 'bizanalyst' else 'Demo')
                     # Whatever we can actually reach them on. Zawadi is meant to collect a
@@ -2769,8 +2761,8 @@ def newsletter_subscribe():
     <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; background:{EMAIL_BG}; color:{EMAIL_TEXT}; padding: 32px 28px; border-radius: 12px;">
       <h1 style="color: {EMAIL_ACCENT}; font-size: 22px;">{headline}</h1>
       <p style="font-size: 15px; line-height: 1.6;">
-        Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips,
-        cloud hosting guides, and EOS&reg; business insights straight to your inbox.
+        Thanks for subscribing to Optimum Prime Solutions updates. You'll get TallyPrime tips
+        and cloud hosting guides straight to your inbox.
       </p>
       <p style="font-size: 15px; line-height: 1.6;">
         In the meantime, feel free to explore
@@ -3483,7 +3475,7 @@ def send_reminders():
             client_body += (
                 f"\nReply *CONFIRM* to confirm you\'ll attend, or call us at "
                 f"*+254 116 246 074* if you need to reschedule.\n\n"
-                f"_Optimum Prime Solutions — TallyPrime · Cloud · EOS®_"
+                f"_Optimum Prime Solutions — TallyPrime · Cloud · Biz Analyst_"
             )
             reminder_detail = (
                 f"Your Google Meet link: {meet_link}" if (demo_type == "online" and meet_link)
