@@ -2997,6 +2997,13 @@ def book_demo():
     team2_phone    = data.get("teamMember2Phone", "")
     team3_name     = data.get("teamMember3Name", "")
     team3_phone    = data.get("teamMember3Phone", "")
+    # Named slots, not a list, matching every other field here -- but capped at
+    # 5 because that's the whole roster (staff.ts on the frontend), not an
+    # arbitrary limit this endpoint imposes.
+    team4_name     = data.get("teamMember4Name", "")
+    team4_phone    = data.get("teamMember4Phone", "")
+    team5_name     = data.get("teamMember5Name", "")
+    team5_phone    = data.get("teamMember5Phone", "")
     source         = data.get("source", "admin_booking")
     is_mavuno      = _is_mavuno_booking(data)
     notify_client  = data.get("notifyClient", True)
@@ -3023,6 +3030,8 @@ def book_demo():
     notes_line = f"\n📝 *Notes:* {demo_notes}" if demo_notes else ""
     team2_line = f"\n👥 *2nd team member:* {team2_name} ({team2_phone})" if team2_name else ""
     team3_line = f"\n👥 *3rd team member:* {team3_name} ({team3_phone})" if team3_name else ""
+    team4_line = f"\n👥 *4th team member:* {team4_name} ({team4_phone})" if team4_name else ""
+    team5_line = f"\n👥 *5th team member:* {team5_name} ({team5_phone})" if team5_name else ""
     email_line = f"\n📧 *Client email:* {client_email}" if client_email else ""
 
     location_line = f"\n📍 *Location:* {demo_location}" if demo_location else ""
@@ -3042,6 +3051,8 @@ def book_demo():
         f"👤 *Booked by:* {team_name} ({team_phone})"
         f"{team2_line}"
         f"{team3_line}"
+        f"{team4_line}"
+        f"{team5_line}"
         f"{notes_line}\n"
     )
     if meet_link:
@@ -3119,6 +3130,10 @@ def book_demo():
         send_team_notification(team2_name, team2_phone)
     if team3_name and team3_phone:
         send_team_notification(team3_name, team3_phone)
+    if team4_name and team4_phone:
+        send_team_notification(team4_name, team4_phone)
+    if team5_name and team5_phone:
+        send_team_notification(team5_name, team5_phone)
 
     # ── Client notification ──────────────────────────────────────────────────
     if notify_client and client_phone:
@@ -3256,6 +3271,10 @@ def book_demo():
             "teamPhone2": team2_phone,
             "teamMember3": team3_name,
             "teamPhone3": team3_phone,
+            "teamMember4": team4_name,
+            "teamPhone4": team4_phone,
+            "teamMember5": team5_name,
+            "teamPhone5": team5_phone,
             "meetLink": meet_link,
             "bookedAt": datetime.now(timezone.utc).isoformat(),
             "source": source,
