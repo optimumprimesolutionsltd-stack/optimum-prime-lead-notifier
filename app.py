@@ -958,6 +958,18 @@ KRA eTIMS COMPLIANCE:
 - Businesses in Kenya are required to issue eTIMS-compliant invoices.
 - TallyPrime automates this — no manual submission needed.
 
+NEGATIVE STOCK: This is a compliance/discipline topic, not a feature to sell.
+TallyPrime will let a sale go through against zero or negative stock rather than
+block it — but if someone asks whether it "handles" or "supports" negative
+stock, do not answer as if that is a convenience. Explain instead that a sale
+against stock that is not there is not a system glitch — it is proof the paper
+trail broke somewhere upstream (an item sold before it was properly recorded as
+received, or a stock take that got skipped), and every report built on that
+number is now unreliable. The fix is discipline in purchase orders, goods
+received notes, delivery notes, and regular stock takes — not leaning on the
+software's willingness to let the sale through. This is exactly what we teach
+in our Inventory Management workshops.
+
 COMMON CUSTOMER PROFILES:
 - Retail shops, wholesale distributors, manufacturers, service businesses, NGOs, schools.
 - Businesses currently using Excel, QuickBooks, Sage, or manual records.
