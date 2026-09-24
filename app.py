@@ -1158,39 +1158,46 @@ TONE:
 """
 
 
-def _is_jamvi_conversation(messages: list) -> bool:
+# What a customer says to name each product. "optimum" and "tally" both mean
+# the original Zawadi persona -- the company and its flagship product.
+_PERSONA_KEYWORDS = (
+    ("jamvi", ("jamvi",)),
+    ("mavuno", ("mavuno",)),
+    ("tally", ("tally", "optimum")),
+)
+
+
+def _persona_named_in(text: str) -> str:
+    """The product a single message names, or "" if it names none (or several)."""
+    lowered = (text or "").lower()
+    # Word-start match, so "totally" is not a mention of Tally.
+    named = [p for p, words in _PERSONA_KEYWORDS
+             if any(re.search(r"\b" + w, lowered) for w in words)]
+    return named[0] if len(named) == 1 else ""
+
+
+def _persona_from_history(messages: list) -> str:
     """
-    Is this conversation about Jamvi? Same shape as the Mavuno check, and for
-    the same reason — only customer turns count, so the assistant naming the
-    product cannot latch the persona by itself.
+    The product the customer most recently named, or "" if they never named one.
+
+    Walks customer turns newest-first. The latest mention wins, NOT the first:
+    a WhatsApp conversation is the whole history of one phone number, so someone
+    who asked about Jamvi last week and about TallyPrime today must be answered
+    about TallyPrime. Latching on any mention anywhere is how a customer asking
+    for Optimum Prime was told "this chat is for Jamvi".
+
+    Only customer turns count, so the assistant naming a product cannot switch
+    the persona by itself. A turn that names no product (or names two) leaves
+    the earlier choice in place, so the persona does not flip back to Tally
+    three messages in when they stop repeating the product name.
     """
-    for m in messages or []:
+    for m in reversed(messages or []):
         if m.get("role") != "user":
             continue
-        if "jamvi" in (m.get("content") or "").lower():
-            return True
-    return False
-
-
-def _is_mavuno_conversation(messages: list) -> bool:
-    """
-    Is this conversation about Mavuno HR rather than TallyPrime?
-
-    Read from what the customer has actually said. The website's WhatsApp
-    button pre-fills "Hi Mavuno HR - ...", so the very first message usually
-    says so outright; checking the whole history rather than only the latest
-    turn means the persona does not flip back to Tally three messages in, when
-    they stop repeating the product name.
-
-    Only customer turns are examined. Matching on our own replies would latch
-    the moment the assistant so much as named the product.
-    """
-    for m in messages or []:
-        if m.get("role") != "user":
-            continue
-        if "mavuno" in (m.get("content") or "").lower():
-            return True
-    return False
+        persona = _persona_named_in(m.get("content"))
+        if persona:
+            return persona
+    return ""
 
 
 def _resolve_zawadi_persona(messages: list, product: str = "") -> str:
@@ -1205,13 +1212,16 @@ def _resolve_zawadi_persona(messages: list, product: str = "") -> str:
     which brand is talking -- which is exactly how a Mavuno HR client ended
     up told "Your TallyPrime demo is confirmed": the booking side had no way
     to know the conversation was ever about anything but Tally.
+
+    A product the caller declares (a website widget knows which site it is on)
+    wins outright; otherwise the customer's latest mention decides.
     """
     declared = (product or "").lower()
-    if "jamvi" in declared or _is_jamvi_conversation(messages):
+    if "jamvi" in declared:
         return "jamvi"
-    if "mavuno" in declared or _is_mavuno_conversation(messages):
+    if "mavuno" in declared:
         return "mavuno"
-    return "tally"
+    return _persona_from_history(messages) or "tally"
 
 
 CHIP_MARKER = re.compile(r"\[\[\s*chips\s*:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
