@@ -1200,6 +1200,36 @@ def _persona_from_history(messages: list) -> str:
     return ""
 
 
+def _history_for_persona(messages: list, persona: str) -> list:
+    """
+    The part of the history the model should see when answering as `persona`.
+
+    Resolving the persona is not enough on its own. If a number spent last week
+    talking about Jamvi, the history is full of replies written as the Jamvi
+    assistant -- "this chat is currently for Jamvi" -- and the model imitates
+    them over its own system prompt. So when the customer has switched product,
+    everything before the turn where they named the current one is dropped.
+    A conversation that never switched is returned whole.
+    """
+    messages = messages or []
+    switch_at = None
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") != "user":
+            continue
+        named = _persona_named_in(m.get("content"))
+        if not named:
+            continue
+        if named == persona:
+            switch_at = i
+        else:
+            # An earlier turn named another product: cut at the latest turn
+            # that named this one (if there is none, the persona was declared
+            # or defaulted -- keep only from the last other-product mention on).
+            return messages[switch_at if switch_at is not None else i + 1:]
+    return messages
+
+
 def _resolve_zawadi_persona(messages: list, product: str = "") -> str:
     """
     Which independently-branded product this conversation is speaking for:
@@ -1327,6 +1357,16 @@ def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") 
             "Always use this when calculating dates, days of the week, or referring "
             "to upcoming events. Never assume the year is 2024."
         )
+        # One WhatsApp number serves every product, so an earlier reply in
+        # this history may have been written as another product's assistant.
+        # Without this the model copies them ("this chat is for Jamvi").
+        product_name = {"jamvi": "Jamvi", "mavuno": "Mavuno HR"}.get(
+            persona, "Optimum Prime Solutions (TallyPrime)")
+        dynamic_prompt += (
+            f"\n\nPRODUCT: This conversation is about {product_name}. If any earlier "
+            "reply in this chat spoke for a different product or said the chat is "
+            f"for another product, that was a mistake -- ignore it and answer as {product_name}."
+        )
         if contact_name:
             dynamic_prompt += (
                 f"\n\nWHATSAPP PROFILE: This customer's WhatsApp display name is \"{contact_name}\". "
@@ -1337,6 +1377,8 @@ def get_zawadi_reply(messages: list, contact_name: str = "", product: str = "") 
                 "If they say they \"already gave\" their name, this is almost certainly what they mean — "
                 "use it (after confirming) rather than saying you have no name on record."
             )
+
+        messages = _history_for_persona(messages, persona)
 
         # ── Build a strictly alternating user/model history ───────────────────
         # The frontend sends roles as 'user' or 'assistant'; Gemini expects 'user'/'model'.
