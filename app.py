@@ -247,7 +247,8 @@ def _wa_send_template(to: str, template_name: str, params: list, language: str =
 TEMPLATE_UNUSABLE_CODES = {132000, 132001, 132005, 132007, 132012, 132015, 132016, 132068, 132069}
 
 
-def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, name: str = "") -> dict:
+def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, name: str = "",
+               fallback_template: str = "") -> dict:
     """
     Send a business-initiated WhatsApp message: one the customer or team member
     didn't ask for in the last 24 hours.
@@ -260,8 +261,20 @@ def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, na
     While a template is still awaiting approval, this falls back to the free-text
     body — that at least reaches anyone inside an open window, which is what the
     old behaviour managed, and the log line says why it happened.
+
+    `fallback_template` names an older approved template with the same
+    parameters. It is used instead of `template_name` until that one is safe to
+    send (see _template_ready), and again if Meta refuses it, before free text.
     """
+    if fallback_template and not _template_ready(template_name):
+        template_name = fallback_template
+        fallback_template = ""
     result = _wa_send_template(to, template_name, _template_params(params), name=name)
+    if fallback_template and not result["success"] and result.get("code") in TEMPLATE_UNUSABLE_CODES:
+        print(f"[Meta WA] Template '{template_name}' unusable ({result['error']}) — "
+              f"falling back to '{fallback_template}' for {to}")
+        template_name = fallback_template
+        result = _wa_send_template(to, template_name, _template_params(params), name=name)
     if result["success"] or result.get("code") not in TEMPLATE_UNUSABLE_CODES:
         return result
     print(f"[Meta WA] Template '{template_name}' unusable ({result['error']}) — "
@@ -276,6 +289,41 @@ def _wa_notify(to: str, template_name: str, params: list, fallback_body: str, na
     fallback["template_unusable"] = template_name
     fallback["template_error"] = result.get("error", "")
     return fallback
+
+
+# name -> (checked_at, ready). Meta's verdict on a template changes rarely, so
+# one lookup per template per ten minutes is plenty.
+_TEMPLATE_READY_CACHE: dict = {}
+
+
+def _template_ready(template_name: str) -> bool:
+    """
+    True only when Meta lists the template as APPROVED *and* UTILITY.
+
+    The *_channel templates carry our WhatsApp Channel link. Meta may decide a
+    link like that is promotional and file the template as MARKETING, at
+    approval or on a later re-review. A marketing booking confirmation costs
+    more and is refused for anyone who opted out of promotions, and the
+    category can never be changed back. So these are used only while Meta
+    agrees they are utility; otherwise callers keep the old template.
+    """
+    now = datetime.now(timezone.utc)
+    cached = _TEMPLATE_READY_CACHE.get(template_name)
+    if cached and now - cached[0] < timedelta(minutes=10):
+        return cached[1]
+    ready = False
+    try:
+        listing = requests.get(
+            "https://graph.facebook.com/v20.0/" + META_WABA_ID + "/message_templates",
+            params={"name": template_name, "fields": "name,status,category",
+                    "access_token": META_WA_TOKEN}, timeout=10,
+        ).json()
+        ready = any(t.get("name") == template_name and t.get("status") == "APPROVED"
+                    and t.get("category") == "UTILITY" for t in listing.get("data", []))
+    except Exception as e:
+        print(f"[Meta WA] could not check template '{template_name}': {e}")
+    _TEMPLATE_READY_CACHE[template_name] = (now, ready)
+    return ready
 
 
 def _template_params(params: list) -> list:
@@ -1632,10 +1680,11 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", 
                         f'Questions? Call or WhatsApp us: {contact_phone}'
                         + ('' if is_mavuno else f'\n\n{OPTIMUM_CHANNEL_LINE}')
                     )
-                    booking_template = "mavuno_booking_received" if is_mavuno else "booking_received"
+                    booking_template = "mavuno_booking_received" if is_mavuno else "booking_received_channel"
                     _wa_notify(norm_phone, booking_template,
                                [name, what, display_date, display_time],
-                               client_body)
+                               client_body,
+                               fallback_template="" if is_mavuno else "booking_received")
                 except Exception as e:
                     print(f'Client notify error: {e}')
 
@@ -1868,6 +1917,7 @@ TEMPLATE_EXPECTED_PARAMS = {
     "demo_reminder": 3, "team_demo_reminder": 4, "delivery_failed_alert": 3,
     "whatsapp_message_alert": 3, "new_review_alert_": 4,
     "webinar_registration_alert": 4, "team_alert": 4, "booking_received": 4,
+    "booking_received_channel": 4, "demo_confirmation_channel": 4,
 }
 
 
@@ -2268,6 +2318,49 @@ TEMPLATE_CREATE = {
             "Questions? Call or WhatsApp us on +254 727 209 720.",
         ]),
         "example": ["John Mark", "a Mavuno HR demo", "Tuesday, 15 September 2026", "2:00 PM"],
+    },
+    # booking_received and demo_confirmation with our WhatsApp Channel link as
+    # the closing line. New names rather than edits: editing an approved body
+    # sends it back through review and stops it sending meanwhile. Used only
+    # once Meta approves them as UTILITY (see _template_ready); until then, or
+    # if Meta files them as MARKETING, the originals keep sending. The link is
+    # fixed text because the channel does not change per message.
+    "booking_received_channel": {
+        "category": "UTILITY",
+        "language": "en",
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Thank you for requesting {{2}} with Optimum Prime Solutions.",
+            "",
+            "📆 Date: {{3}}",
+            "🕐 Time: {{4}} (EAT)",
+            "",
+            "Our team is reviewing your request and will confirm the slot shortly.",
+            "",
+            "Questions? Call or WhatsApp us on +254 116 246 074.",
+            "",
+            "For upcoming events and the latest updates, follow the Optimum Prime Solutions channel on WhatsApp: https://whatsapp.com/channel/0029VbFFUDsIXnltlzUT6K3L",
+        ]),
+        "example": ["John Mark", "a TallyPrime demo", "Tuesday, 15 September 2026", "2:00 PM"],
+    },
+    "demo_confirmation_channel": {
+        "category": "UTILITY",
+        "language": "en",
+        "text": chr(10).join([
+            "Hello {{1}} 👋",
+            "",
+            "Your TallyPrime demo with Optimum Prime Solutions is confirmed:",
+            "",
+            "📆 Date: {{2}}",
+            "🕐 Time: {{3}} (EAT)",
+            "📌 {{4}}",
+            "",
+            "Questions? Call or WhatsApp us: +254 116 246 074",
+            "",
+            "For upcoming events and the latest updates, follow the Optimum Prime Solutions channel on WhatsApp: https://whatsapp.com/channel/0029VbFFUDsIXnltlzUT6K3L",
+        ]),
+        "example": ["John Mark", "Tuesday, 15 September 2026", "2:00 PM", "Join here: https://meet.google.com/abc-defg-hij"],
     },
 }
 
@@ -3270,8 +3363,9 @@ def book_demo():
                 f"Questions? Call or WhatsApp us: +254 116 246 074\n\n"
                 f"{OPTIMUM_CHANNEL_LINE}"
             )
-        client_template = "mavuno_demo_confirmation" if is_mavuno else "demo_confirmation"
-        r = _wa_notify(norm_client, client_template, [client_name, display_date, display_time, details], client_fallback_body, name=client_name)
+        client_template = "mavuno_demo_confirmation" if is_mavuno else "demo_confirmation_channel"
+        r = _wa_notify(norm_client, client_template, [client_name, display_date, display_time, details], client_fallback_body, name=client_name,
+                       fallback_template="" if is_mavuno else "demo_confirmation")
         results["client"] = {
             "to": norm_client,
             "message_id": r.get("message_id", ""),
