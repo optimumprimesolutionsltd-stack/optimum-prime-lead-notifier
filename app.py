@@ -66,6 +66,12 @@ EMAIL_BORDER   = "rgba(255,255,255,0.1)"
 # alongside the existing WhatsApp alerts to TEAM_NUMBERS.
 ADMIN_NOTIFY_EMAIL    = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
 
+# Optimum's WhatsApp Channel. Zawadi points people here for news on events and
+# TallyPrime releases instead of inventing dates. Tally persona only: Mavuno HR
+# and Jamvi are branded apart from Optimum, so each gets its own channel later.
+OPTIMUM_CHANNEL_URL = (os.environ.get("OPTIMUM_CHANNEL_URL", "").strip()
+                       or "https://whatsapp.com/channel/0029VbFFUDsIXnltlzUT6K3L")
+
 # Signs one-click unsubscribe links so anyone can unsubscribe without logging
 # in, but only for their own address (can't be used to unsubscribe someone
 # else without also knowing their exact email — the token is a keyed hash of it).
@@ -1033,7 +1039,10 @@ Do NOT use this for questions you CAN answer — only when you genuinely cannot 
 PAST EVENTS (already held — mention only if the user asks about previous/recent events, or to show our track record; never present these as upcoming or invite people to register for them):
 - Free TallyPrime 7.1 webinar — held Wednesday 15th July 2026 (online). This event has already taken place.
 - Inventory Management Breakfast Workshop (FREE) — held Friday, 24th July 2026 at Ndanga Hotel, Ruiru. Topics covered: stock control & reorder points, TallyPrime inventory features, audit & reconciliation tips, and a live Q&A. This event has already taken place.
-UPCOMING EVENTS: There are no upcoming events currently scheduled. If the user is interested in the next webinar, workshop, or training, invite them to contact us on +254 116 246 074 so we can notify them when the next one is announced. Do NOT proactively mention events unless the user asks about events, webinars, workshops, or upcoming training, and never invent event dates — if unsure whether an event is upcoming, treat it as not scheduled and direct the user to +254 116 246 074.
+UPCOMING EVENTS: There are no upcoming events currently scheduled. Do NOT proactively mention events unless the user asks about events, webinars, workshops, or upcoming training, and never invent event dates — if unsure whether an event is upcoming, treat it as not scheduled.
+
+OUR WHATSAPP CHANNEL: {OPTIMUM_CHANNEL_URL}
+When the user asks about upcoming events, webinars, workshops, training, new TallyPrime releases, or wants to "stay updated" / "be notified", answer what you can and then invite them to follow our channel for the latest updates, e.g. "For the latest updates, follow the Optimum Prime Solutions channel on WhatsApp: {OPTIMUM_CHANNEL_URL}". Paste the link exactly as written, on its own, never as a markdown link. Mention it at most once per conversation, and do not add it to unrelated answers (pricing, support, bookings).
 
 QUICK REPLY BUTTONS:
 When your message ends with a question whose answer is a small, closed set, put a marker on the very last line so the website widget can offer the answers as buttons to tap. Format:
@@ -1068,7 +1077,7 @@ CONVERSATION STYLE:
 - Always end with a clear next step (book a demo or chat on WhatsApp). Only suggest the webinar if the user has asked about events or training.
 - If the user greets you, greet back warmly and ask their name.
 - If you know their name, use it naturally in conversation.
-"""
+""".replace("{OPTIMUM_CHANNEL_URL}", OPTIMUM_CHANNEL_URL)
 
 
 # ── Mavuno HR ────────────────────────────────────────────────────────────────
