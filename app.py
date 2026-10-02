@@ -71,6 +71,13 @@ ADMIN_NOTIFY_EMAIL    = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
 # and Jamvi are branded apart from Optimum, so each gets its own channel later.
 OPTIMUM_CHANNEL_URL = (os.environ.get("OPTIMUM_CHANNEL_URL", "").strip()
                        or "https://whatsapp.com/channel/0029VbFFUDsIXnltlzUT6K3L")
+# The closing line for Optimum booking messages, plain-text and email forms.
+OPTIMUM_CHANNEL_LINE = ("For upcoming events and the latest updates, follow the Optimum "
+                        f"Prime Solutions channel on WhatsApp:\n{OPTIMUM_CHANNEL_URL}")
+OPTIMUM_CHANNEL_HTML = (f'<p style="margin:16px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
+                        f'For upcoming events and the latest updates, follow the Optimum Prime Solutions '
+                        f'channel on WhatsApp: <a href="{OPTIMUM_CHANNEL_URL}" style="color:{EMAIL_ACCENT};">'
+                        f'{OPTIMUM_CHANNEL_URL}</a></p>')
 
 # Signs one-click unsubscribe links so anyone can unsubscribe without logging
 # in, but only for their own address (can't be used to unsubscribe someone
@@ -1623,6 +1630,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", 
                         f'Our team is reviewing your request and will confirm the slot shortly. '
                         f'You will receive a confirmation message with all the details once approved.\n\n'
                         f'Questions? Call or WhatsApp us: {contact_phone}'
+                        + ('' if is_mavuno else f'\n\n{OPTIMUM_CHANNEL_LINE}')
                     )
                     booking_template = "mavuno_booking_received" if is_mavuno else "booking_received"
                     _wa_notify(norm_phone, booking_template,
@@ -1668,7 +1676,8 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", 
                             f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
                             f'Our team is reviewing the slot and will confirm it shortly. This is not a '
                             f'confirmation yet.<br/>Questions? Call or WhatsApp us on {email_phone}.</p>'
-                            f'</div></div>')
+                            + ('' if is_mavuno else OPTIMUM_CHANNEL_HTML)
+                            + f'</div></div>')
                         er = _send_email(email, f'We have your request — {display_date} at {display_time}', email_html)
                         booking_email_sent = er.get('success', False)
                     except Exception as e:
@@ -1688,6 +1697,7 @@ def process_zawadi_reply(reply: str, from_phone: str = "", from_name: str = "", 
                         f"✅ Thank you, {name}! We've received your demo request for {display_date} at {display_time}. "
                         f"Our team will review and confirm your slot shortly — you'll get a WhatsApp message once it's confirmed. "
                         f"Questions? Call us on {'+254 727 209 720' if is_mavuno else '+254 116 246 074'}."
+                        + (f"\n\n{OPTIMUM_CHANNEL_LINE}" if persona == "tally" else "")
                     )
                 }
 
@@ -3257,7 +3267,8 @@ def book_demo():
                 f"📆 *Date:* {display_date}\n"
                 f"🕐 *Time:* {display_time} (EAT)\n"
                 f"📌 *{details}*\n\n"
-                f"Questions? Call or WhatsApp us: +254 116 246 074"
+                f"Questions? Call or WhatsApp us: +254 116 246 074\n\n"
+                f"{OPTIMUM_CHANNEL_LINE}"
             )
         client_template = "mavuno_demo_confirmation" if is_mavuno else "demo_confirmation"
         r = _wa_notify(norm_client, client_template, [client_name, display_date, display_time, details], client_fallback_body, name=client_name)
@@ -3323,7 +3334,8 @@ def book_demo():
             f'<p style="margin:24px 0 0;color:{EMAIL_TEXT_DIM};font-size:14px;line-height:1.6;">'
             + (f'Need to change the time? Reply to this email or WhatsApp us on +254 727 209 720.</p>'
                if is_mavuno else
-               f'Need to change the time? Reply to this email or WhatsApp us on +254 116 246 074.</p>')
+               f'Need to change the time? Reply to this email or WhatsApp us on +254 116 246 074.</p>'
+               + OPTIMUM_CHANNEL_HTML)
             + f'</div></div>'
         )
         email_subject = (f"Your Mavuno HR demo — {display_date} at {display_time}" if is_mavuno
