@@ -10,6 +10,7 @@ import html
 import csv
 import collections
 import itertools
+import threading
 import io
 import uuid
 import hashlib
@@ -239,6 +240,111 @@ def _wa_send_template(to: str, template_name: str, params: list, language: str =
     except Exception as e:
         print(f"[Meta WA] Exception sending template to {to}: {e}")
         return {"success": False, "message_id": "", "error": str(e), "code": None}
+
+
+# ── Jamvi's Android app, sent as a file over WhatsApp ────────────────────────
+# Chrome on a phone blocks the Jamvi APK that reads M-Pesa messages ("Dangerous
+# download blocked") while Google reviews it, but a file that arrives through
+# WhatsApp is not checked by Chrome. jamvi.co.ke/download has a "Get it on
+# WhatsApp" button that opens this number with JAMVI_APK_REQUEST_TEXT typed in;
+# the bot answers that with the APK itself. The customer wrote first, so this
+# is inside the 24h window and needs no template.
+JAMVI_APK_URL = os.environ.get("JAMVI_WHATSAPP_APK_URL", "https://jamvi.co.ke/download/jamvi-sms.apk").strip()
+JAMVI_APK_FILENAME = "jamvi.apk"
+JAMVI_APK_REQUEST_TEXT = "Hi Jamvi, please send me the Android app"
+JAMVI_APK_FALLBACK = (
+    "Sorry, WhatsApp would not let me send the app file just now. You can get it at "
+    "jamvi.co.ke/download - for the version that reads your M-Pesa messages, download it on a "
+    "computer and send it to your phone on WhatsApp as a Document."
+)
+# Meta keeps uploaded media for 30 days; re-upload well before that.
+JAMVI_APK_MEDIA_MAX_AGE = timedelta(days=20)
+_jamvi_apk_media = {"id": "", "at": None}
+_jamvi_apk_lock = threading.Lock()
+# Message ids of APK sends, so a failure reported later by the status webhook
+# (Meta can accept a send and refuse the media afterwards) still gets the link.
+JAMVI_APK_SENDS = {}
+
+
+def _is_jamvi_apk_request(text: str) -> bool:
+    """The website's pre-filled request, or someone asking Jamvi for the app/APK in their own words."""
+    lowered = (text or "").lower()
+    if JAMVI_APK_REQUEST_TEXT.lower() in lowered:
+        return True
+    return ("jamvi" in lowered and bool(re.search(r"\bapk\b|android app|send me the app|download the app", lowered)))
+
+
+def _jamvi_apk_media_id() -> str:
+    """Upload the APK to Meta once and reuse the media id; "" if Meta will not take it."""
+    with _jamvi_apk_lock:
+        cached_at = _jamvi_apk_media["at"]
+        if _jamvi_apk_media["id"] and cached_at and datetime.now(timezone.utc) - cached_at < JAMVI_APK_MEDIA_MAX_AGE:
+            return _jamvi_apk_media["id"]
+        try:
+            apk = requests.get(JAMVI_APK_URL, timeout=120)
+            apk.raise_for_status()
+            resp = requests.post(
+                f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/media",
+                headers={"Authorization": f"Bearer {META_WA_TOKEN}"},
+                data={"messaging_product": "whatsapp", "type": "application/vnd.android.package-archive"},
+                files={"file": (JAMVI_APK_FILENAME, apk.content, "application/vnd.android.package-archive")},
+                timeout=180,
+            )
+            data = resp.json()
+            media_id = data.get("id", "")
+            if not media_id:
+                print(f"[Jamvi APK] Meta refused the upload: {data}")
+                return ""
+            _jamvi_apk_media.update(id=media_id, at=datetime.now(timezone.utc))
+            print(f"[Jamvi APK] Uploaded {len(apk.content)} bytes as media {media_id}")
+            return media_id
+        except Exception as e:
+            print(f"[Jamvi APK] Upload failed: {e}")
+            return ""
+
+
+def _send_jamvi_apk(to_digits: str, name: str = "") -> None:
+    """Send the Jamvi APK as a document, or the download link if that cannot be done. Runs in a thread."""
+    media_id = _jamvi_apk_media_id()
+    if media_id:
+        try:
+            resp = requests.post(
+                META_WA_API_URL,
+                json={
+                    "messaging_product": "whatsapp",
+                    "to": to_digits,
+                    "type": "document",
+                    "document": {
+                        "id": media_id,
+                        "filename": JAMVI_APK_FILENAME,
+                        "caption": "Jamvi for Android. Tap it, then Install.",
+                    },
+                },
+                headers={"Authorization": f"Bearer {META_WA_TOKEN}", "Content-Type": "application/json"},
+                timeout=30,
+            )
+            data = resp.json()
+            if resp.status_code == 200 and "messages" in data:
+                msg_id = data["messages"][0].get("id", "")
+                JAMVI_APK_SENDS[msg_id] = {"to": to_digits, "name": name}
+                _log_wa_message(to_digits, "out", "[Jamvi APK sent as a file]", name=name, message_id=msg_id, force=True)
+                return
+            print(f"[Jamvi APK] Send refused for +{to_digits}: {data}")
+            # A refused media id (expired or deleted at Meta) is not worth reusing.
+            _jamvi_apk_media.update(id="", at=None)
+        except Exception as e:
+            print(f"[Jamvi APK] Send failed for +{to_digits}: {e}")
+    _wa_send(to_digits, JAMVI_APK_FALLBACK, name=name, force_log=True)
+
+
+def _reply_with_jamvi_apk(to_digits: str, name: str = "") -> None:
+    """Answer an app request: say it is coming, then send the file in the background."""
+    _wa_send(to_digits,
+             "Here is Jamvi for Android, the version that reads your M-Pesa messages. It is about 58 MB, "
+             "so it may take a minute. Tap the file when it arrives, then Install - if Android asks, allow "
+             "installs from WhatsApp. Already have Jamvi? It installs over it and keeps everything.",
+             name=name, force_log=True)
+    threading.Thread(target=_send_jamvi_apk, args=(to_digits, name), daemon=True).start()
 
 
 # Meta error codes meaning "this template can't be used" — it doesn't exist, isn't
@@ -2653,6 +2759,10 @@ def meta_status_webhook():
                         "error_details": (err0.get("error_data") or {}).get("details"),
                     })
                     is_team_recipient = to_number.lstrip("+") in {n.lstrip("+") for n in TEAM_NUMBERS}
+                    apk_send = JAMVI_APK_SENDS.pop(msg_id, None) if status in {"failed", "undelivered", "delivered", "read"} else None
+                    if apk_send and status in {"failed", "undelivered"}:
+                        _jamvi_apk_media.update(id="", at=None)
+                        _wa_send(apk_send["to"], JAMVI_APK_FALLBACK, name=apk_send["name"], force_log=True)
                     if status in {"failed", "undelivered"}:
                         errors = status_obj.get("errors", [{}])
                         err_msg = errors[0].get("message", "Unknown error") if errors else "Unknown error"
@@ -2745,6 +2855,10 @@ def meta_status_webhook():
                         continue
 
                     if bot_paused:
+                        continue
+
+                    if _is_jamvi_apk_request(text):
+                        _reply_with_jamvi_apk(from_number, name=contact_name)
                         continue
 
                     stored_messages = existing_convo.get("messages") or {}
